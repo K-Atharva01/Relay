@@ -1,6 +1,6 @@
 #!/bin/bash
 
-BASE_URL="http://localhost:5000"
+BASE_URL="http:///192.168.0.200:5000"
 
 echo "Logging in Alice..."
 ALICE_TOKEN=$(curl -s -X POST "$BASE_URL/auth/login" \

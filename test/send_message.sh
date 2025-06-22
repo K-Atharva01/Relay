@@ -1,6 +1,6 @@
 #!/bin/bash
 
-BASE_URL="http://localhost:5000"
+BASE_URL="http://192.168.0.200:5000"
 ALICE_TOKEN=$(cat alice.token)
 BOB_KEY_UID=$(cat bob_key_uid.txt)
 

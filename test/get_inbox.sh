@@ -1,6 +1,6 @@
 #!/bin/bash
 
-BASE_URL="http://localhost:5000"
+BASE_URL="http://192.168.0.200:5000"
 BOB_TOKEN=$(cat bob.token)
 
 echo "Fetching Bob's inbox..."
