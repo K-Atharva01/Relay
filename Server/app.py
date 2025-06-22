@@ -5,7 +5,7 @@ from flask_jwt_extended import JWTManager ,create_access_token
 from database.db import db
 from routes.key_routes import key_bp
 from routes.message_routes import message_bp
-from routes.auth_routes import auth_bp  # We’ll create this file
+from routes.auth_routes import auth_bp  
 from datetime import timedelta
 
 
@@ -35,7 +35,7 @@ db.init_app(app)
 # Register blueprints
 app.register_blueprint(auth_bp, url_prefix='/auth')
 app.register_blueprint(key_bp, url_prefix='/keys')
-app.register_blueprint(message_bp, url_prefix='/messages')
+app.register_blueprint(message_bp, url_prefix='/message')
 
 @jwt.token_in_blocklist_loader
 def check_if_token_revoked(jwt_header, jwt_payload):
@@ -55,7 +55,8 @@ def handle_exception(e):
 
     return jsonify({
         "error": "Internal Server Error",
-        "description": "An unexpected error occurred. Please try again later."
+        "description": "An unexpected error occurred. Please try again later.",
+        "description": str(e)
     }), 500
 
 

@@ -19,16 +19,21 @@ def upload_key():
     if not public_key:
         return jsonify({'error': 'Public key is required'}), 400
 
-    # Create key entry without key_uid first
-    new_key = PublicKey(user_id=user.id, public_key=public_key)
-    db.session.add(new_key)
-    db.session.flush()  # Get new_key.id before commit
+    try:
+        # Step 1: Insert with placeholder key_uid
+        placeholder_key = PublicKey(user_id=user.unique_id, public_key=public_key, key_uid="temp")
+        db.session.add(placeholder_key)
+        db.session.flush()  # Get the auto-generated id
 
-    # Assign key_uid as "userID-keyID"
-    new_key.key_uid = f"{user.id}-{new_key.id}"
-    db.session.commit()
+        # Step 2: Generate key_uid using user.id and key.id
+        placeholder_key.key_uid = f"{user.unique_id}-{placeholder_key.id}"
+        db.session.commit()
 
-    return jsonify({'message': 'Public key uploaded successfully', 'key_uid': new_key.key_uid}), 201
+        return jsonify({'message': 'Public key uploaded successfully', 'key_uid': placeholder_key.key_uid}), 201
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': 'DB error', 'description': str(e)}), 500
 
 
 
@@ -41,7 +46,7 @@ def get_keys():
     if not user:
         return jsonify({'error': 'User not found'}), 404
 
-    keys = PublicKey.query.filter_by(user_id=user.id).order_by(PublicKey.timestamp.desc()).all()
+    keys = PublicKey.query.filter_by(user_id=user.unique_id).order_by(PublicKey.timestamp.desc()).all()
 
     key_list = [{
         # 'key_id': key.id,
@@ -70,7 +75,7 @@ def get_recipient_public_key():
     if not recipient:
         return jsonify({'error': 'Recipient not found'}), 404
 
-    latest_key = PublicKey.query.filter_by(user_id=recipient.id)\
+    latest_key = PublicKey.query.filter_by(user_id=recipient.unique_id)\
                                 .order_by(PublicKey.timestamp.desc()).first()
 
     if not latest_key:
@@ -82,6 +87,28 @@ def get_recipient_public_key():
         'key_uid': latest_key.key_uid,
         'public_key': latest_key.public_key
     }), 200
+
+
+@key_bp.route('/deleteKey', methods=['POST'])
+@jwt_required()
+def delete_key():
+    current_user_id = get_jwt_identity()
+    data = request.get_json()
+    key_uid = data.get('key_uid')
+
+    if not key_uid:
+        return jsonify({'error': 'key_uid is required'}), 400
+
+    key = PublicKey.query.filter_by(key_uid=key_uid, user_id=current_user_id).first()
+
+    if not key:
+        return jsonify({'error': 'Key not found or does not belong to the user'}), 404
+
+    db.session.delete(key)
+    db.session.commit()
+
+    return jsonify({'message': 'Key deleted successfully'}), 200
+
 
 
 #Old key retrieval

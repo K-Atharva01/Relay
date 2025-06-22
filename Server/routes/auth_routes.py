@@ -1,6 +1,7 @@
+from datetime import timedelta
 from flask import Blueprint, request, jsonify
-from flask_jwt_extended import create_access_token, get_jwt, jwt_required
-from database.db import db, User
+from flask_jwt_extended import create_access_token, get_jti, get_jwt, jwt_required
+from database.db import RevokedToken, db, User
 
 auth_bp = Blueprint('auth', __name__)
 
@@ -10,10 +11,10 @@ def register_user():
     name=data['name']
     username=data['username']
     password=data['password']
-    phone=data.get('phone'),
+    phone=data.get('phone')
     email=data.get('email')
-    if not all([username, password,email,phone]):
-        return jsonify({'error': 'Username, password, phone and email are required'}), 400
+    if not all([username, name, password,email,phone]):
+        return jsonify({'error': 'name, Username, password, phone and email are required'}), 400
 
     if User.query.filter_by(username=username,phone=phone,email=email).first():
         return jsonify({'error': 'User already exists'}), 409
@@ -46,7 +47,16 @@ def login():
     if not user or not user.check_password(password):
         return jsonify({'error': 'Invalid credentials'}), 401
 
+    if user.current_jti:
+        revoked = RevokedToken(jti=user.current_jti)
+        db.session.add(revoked)
+
     access_token = create_access_token(identity=username)
+    new_jti = get_jti(access_token)
+
+    user.current_jti = new_jti
+    db.session.commit()
+
     return jsonify({'access_token': access_token}), 200
 
 
