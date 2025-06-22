@@ -1,0 +1,96 @@
+Okay, let's narrow our focus exclusively to the **server-side implementation**.
+
+Here's a concise summary of all the components and logic that need to be built and secured on your Flask backend:
+
+---
+
+### Server-Side Implementation Overview (Flask API & Database)
+
+The server's role is primarily to act as a secure relay, manage public keys/certificates, and facilitate message routing, all while never seeing the plaintext sensitive data.
+
+1.  **Foundational API Security:**
+    * **User Authentication & Authorization:**
+        * **User Registration:** Implement an endpoint for creating new users. **Crucially, store passwords as strong, salted hashes** (e.g., using `werkzeug.security.generate_password_hash` and `check_password_hash`).
+        * **User Login:** Authenticate users against their hashed passwords.
+        * **JWT Access Token Generation:** Upon successful login, generate a JWT (e.g., 1-hour expiry) and return it to the client.
+        * **JWT Blacklisting/Revocation:** Create a mechanism (e.g., a database table or Redis set for blacklisted tokens) to invalidate JWTs upon logout or if a breach occurs.
+        * **`@jwt_required()` Decorator:** Apply this decorator (or similar middleware) to all API endpoints that require authentication.
+        * **Secret Management:** Ensure your `JWT_SECRET_KEY` and `SECRET_KEY` (for Flask sessions if used) are strong, random, and loaded from secure environment variables, *never* hardcoded.
+    * **Input Validation:** Implement comprehensive and strict validation for *all* incoming API requests (JSON payloads, URL parameters) to prevent injection attacks, malformed data, and logic flaws. Validate data types, lengths, and specific formats (e.g., PEM strings).
+    * **Error Handling:** Provide generic, non-descriptive error responses (e.g., 400 Bad Request, 401 Unauthorized, 403 Forbidden, 404 Not Found, 500 Internal Server Error without stack traces).
+    * **Rate Limiting:** Implement for login, registration, and potentially other high-volume/sensitive endpoints to prevent brute-force and DoS attacks.
+    * **HTTPS:** Crucial for production. Configure your server to only accept HTTPS connections.
+    * **CORS Configuration:** Explicitly define which origins (your frontend domain) are allowed to access your API to prevent cross-site request issues.
+    * **Production Configuration:** Ensure `FLASK_DEBUG=False` and other security hardening measures are in place for production deployment.
+
+2.  **Key Management System:**
+    * **Database Schema Updates:**
+        * **`User` Model:**
+            * Add a field to store the user's **signed Long-Term Public Identity Certificate** (as a PEM-encoded string).
+            * Add a `long_term_public_key_uid` (e.g., a UUID or hash derived from the certificate) for easy lookup.
+        * **New `EphemeralPublicKey` Model/Table:**
+            * `id` (PK), `user_id` (FK to User).
+            * `public_key_pem` (the raw Ephemeral Public Key as a PEM-encoded string).
+            * `key_uid` (a unique identifier for this specific ephemeral key, used in messages).
+            * `jti` (the JWT ID of the session that generated this key, for expiry tracking).
+            * `created_at`, `expires_at` (timestamp for lifecycle management).
+    * **API Endpoint: `POST /api/user/set_long_term_key`:**
+        * Authenticated endpoint.
+        * Receives the **raw Long-Term Public Key (PEM)** from the client.
+        * **Internal Call to CA Module:** Calls the internal Organizational CA module to have this public key **signed into an X.509 certificate**.
+        * Stores the **resulting signed certificate** (PEM string) in the `User` model for the current user.
+        * Updates `long_term_public_key_uid` for the user.
+    * **API Endpoint: `POST /api/user/set_ephemeral_key`:**
+        * Authenticated endpoint.
+        * Receives the **raw Ephemeral Public Key (PEM)** from the client.
+        * Stores this key in the `EphemeralPublicKey` table, linking it to the current user's ID and the JWT's `jti` (or a derived session ID).
+        * Assigns a `key_uid` to this ephemeral key.
+    * **API Endpoint: `GET /api/user/public_key/<username>`:**
+        * Authenticated endpoint.
+        * **Crucial Key Discovery Logic:**
+            1.  Check if the `<username>` has an **active `EphemeralPublicKey`** (i.e., one whose `jti` matches an active/non-blacklisted JWT session).
+            2.  If an active ephemeral key exists, return the `public_key_pem` of that ephemeral key and a type indicator (e.g., `"type": "ephemeral"`).
+            3.  If no active ephemeral key, retrieve the user's **signed Long-Term Public Identity Certificate** from the `User` model. Return the certificate (PEM string) and a type indicator (e.g., `"type": "identity"`).
+        * Handle cases where the target user does not exist or has no keys/certificates (e.g., 404 Not Found).
+    * **Ephemeral Key Purging Logic:** Implement a background task, or integrate into the JWT blacklisting mechanism, to **automatically delete expired or blacklisted `EphemeralPublicKey` records** from the database. This ensures only active session keys are stored.
+
+3.  **Organizational Certificate Authority (CA) Module:**
+    * This will be a separate Python module/class within your server code.
+    * **CA Key Pair Management:**
+        * Handles the secure loading of the **Organization's Root CA Private Key** (must be stored extremely securely, preferably offline or in an HSM for production).
+        * Holds the **Organization's Root CA Public Certificate** (this needs to be securely distributed to clients).
+    * **Certificate Issuance Function/Method:**
+        * Takes a raw user public key (PEM) and user identity details as input.
+        * Uses `cryptography` library (or similar) to construct an X.509 certificate for the user, embedding their public key, user ID, and a validity period.
+        * **Signs this newly created certificate using the CA's private key.**
+        * Returns the signed X.509 certificate (PEM-encoded) for storage.
+    * **Certificate Revocation (Advanced - Consider for Phase 2):** If implementing CRLs or OCSP, this module would also manage the status of revoked certificates.
+
+4.  **Message Management System:**
+    * **`Message` Database Model:**
+        * `id` (PK), `sender_id` (FK to User), `recipient_id` (FK to User).
+        * `encrypted_content` (TEXT/BLOB): The actual encrypted credential data (base64 encoded if binary).
+        * `recipient_key_uid` (STRING): The `key_uid` of the recipient's public key (ephemeral or long-term identity) used for encryption.
+        * `sender_signature` (TEXT/BLOB): The digital signature created by the sender's Long-Term Private Identity Key.
+        * `sender_public_identity_key_uid` (STRING): The `key_uid` of the sender's Long-Term Public Identity Certificate.
+        * `timestamp` (DATETIME): When the message was sent.
+        * `is_opened` (BOOLEAN): Defaults to `False`. Marks if the recipient has fetched it.
+    * **API Endpoint: `POST /api/messages/send`:**
+        * Authenticated endpoint.
+        * Receives `recipient_username`, `encrypted_content`, `recipient_key_uid`, `sender_signature`, `sender_public_identity_key_uid`.
+        * Validates input.
+        * Creates and stores a new `Message` record.
+        * **Server never sees or attempts to decrypt the `encrypted_content`.**
+    * **API Endpoint: `GET /api/messages/inbox`:**
+        * Authenticated endpoint.
+        * Retrieves all messages where `recipient_id` matches the current authenticated user's ID.
+        * Can support query parameters for filtering (e.g., `?unopened_only=true`).
+        * **After messages are retrieved, update their `is_opened` status to `True`** in the database.
+    * **API Endpoint: `DELETE /api/messages/<message_id>`:**
+        * Authenticated endpoint.
+        * **Access Control:** Ensure the `message_id` belongs to the current authenticated user (`recipient_id`).
+        * Deletes the message from the database. (Alternatively, you could configure `GET /inbox` to delete messages after they are successfully delivered to the client, reducing server storage even further.)
+
+---
+
+This comprehensive server-side overview should give us a solid checklist for code review. Let's start whenever you're ready with your first snippet!
