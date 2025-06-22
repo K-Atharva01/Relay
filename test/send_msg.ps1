@@ -1,15 +1,12 @@
-# Set the server URL
-$baseUrl = "http://127.0.0.1:5000"
+$token = "<paste-access-token-here>"
 
-# Define sender, receiver, and message
+$headers = @{
+    Authorization = "Bearer $token"
+}
+
 $body = @{
-    sender = "alice"
-    receiver = "bob"
-    message = "VGhpcyBpcyBhIHNlY3JldCBtZXNzYWdlIQ=="  # Base64 of: This is a secret message!
-} | ConvertTo-Json -Depth 2
+    recipient = "bob"
+    message = "ENCRYPTED_MESSAGE_DATA"
+} | ConvertTo-Json
 
-# Send the request
-$response = Invoke-RestMethod -Uri "$baseUrl/messages/send" -Method Post -Body $body -ContentType "application/json"
-
-# Output
-$response
+Invoke-RestMethod -Uri http://127.0.0.1:5000/messages/send -Method POST -Body $body -Headers $headers -ContentType "application/json"
