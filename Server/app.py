@@ -1,4 +1,5 @@
-from flask import Flask
+from http.client import HTTPException
+from flask import Flask, jsonify
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager ,create_access_token
 from database.db import db
@@ -19,6 +20,7 @@ app.config['JWT_ALGORITHM'] = "HS256"
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=8)
 app.config['JWT_BLACKLIST_ENABLED'] = True
 app.config['JWT_BLACKLIST_TOKEN_CHECKS'] = ['access']
+app.config['PROPAGATE_EXCEPTIONS'] = False
 
 
 # import os
@@ -40,12 +42,27 @@ def check_if_token_revoked(jwt_header, jwt_payload):
     from database.db import RevokedToken
     return RevokedToken.query.filter_by(jti=jwt_payload["jti"]).first() is not None
 
+@app.errorhandler(Exception)
+def handle_exception(e):
+    if isinstance(e, HTTPException):
+        response = e.get_response()
+        response.data = jsonify({
+            "error": e.name,
+            "description": e.description
+        }).get_data()
+        response.content_type = "application/json"
+        return response
 
-# Create DB tables
+    return jsonify({
+        "error": "Internal Server Error",
+        "description": "An unexpected error occurred. Please try again later."
+    }), 500
+
+
 with app.app_context():
     db.create_all()
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=True)
 
 

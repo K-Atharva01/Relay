@@ -5,26 +5,33 @@ from database.db import db, User
 auth_bp = Blueprint('auth', __name__)
 
 @auth_bp.route('/register', methods=['POST'])
-def register():
+def register_user():
     data = request.get_json()
-    username = data.get('username')
-    password = data.get('password')
-    public_key = data.get('public_key')
+    name=data['name']
+    username=data['username']
+    password=data['password']
+    phone=data.get('phone'),
+    email=data.get('email')
+    if not all([username, password,email,phone]):
+        return jsonify({'error': 'Username, password, phone and email are required'}), 400
 
-    if not all([username, password, public_key]):
-        return jsonify({'error': 'Username, password, and public_key are required'}), 400
-
-    if User.query.filter_by(username=username).first():
+    if User.query.filter_by(username=username,phone=phone,email=email).first():
         return jsonify({'error': 'User already exists'}), 409
+    new_user = User(
+        name=name,
+        username=username,
+        phone=phone,
+        email=email,
+        password_hash=User.set_password(password)
+    )
 
-    user = User(username=username, public_key=public_key)
-    user.set_password(password)
-
-    db.session.add(user)
+    db.session.add(new_user)
     db.session.commit()
 
-    return jsonify({'message': 'User registered successfully'}), 201
-
+    return jsonify({
+        "message": "User registered successfully",
+        # "unique_id": new_user.unique_id
+    }), 201
 
 @auth_bp.route('/login', methods=['POST'])
 def login():
