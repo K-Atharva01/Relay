@@ -1,8 +1,8 @@
 # server/routes/key_routes.py
-import uuid # For explicit UUID generation if needed, though model defaults
-from flask import Blueprint, current_app, request, jsonify, current_app
+import uuid 
+from flask import Blueprint, request, jsonify # Removed current_app as it's not used directly here
 from database.db import PublicKey, db, User
-from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt # get_jwt to access JTI
+from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt 
 
 key_bp = Blueprint('keys', __name__)
 
@@ -12,19 +12,16 @@ def add_public_key():
     """
     Allows a user to upload a public key (either an identity certificate or an ephemeral key).
     """
-    current_username = get_jwt_identity()
-    user = User.query.filter_by(username=current_username).first()
+    current_user_id = get_jwt_identity() # NEW: Get user ID from JWT
+    user = User.query.get(current_user_id) # NEW: Fetch user by ID
 
     if not user:
-        return jsonify({'error': 'User not found'}), 404
+        return jsonify({'error': 'Authentication failed: User not found.'}), 401 # Changed status to 401
 
     data = request.get_json()
-    public_key_pem = data.get('public_key_pem') # Renamed as per model
-    key_type = data.get('key_type') # 'identity' or 'ephemeral'
+    public_key_pem = data.get('public_key_pem') 
+    key_type = data.get('key_type') 
     
-    # Client can optionally provide a key_uid, otherwise server generates.
-    # For identity keys, client might generate to keep consistent across devices.
-    # For ephemeral, server generation is fine.
     client_provided_key_uid = data.get('key_uid')
 
     if not public_key_pem:
@@ -39,31 +36,27 @@ def add_public_key():
         if not jti_to_store:
             return jsonify({'error': 'Ephemeral key requires an active session JTI'}), 400
         
-        # Optional: Prevent multiple ephemeral keys for the same JTI
+        # Prevent multiple ephemeral keys for the same JTI for the same user
         existing_ephemeral_key = PublicKey.query.filter_by(
-            user_id=user.id, # Corrected FK
+            user_id=user.id, 
             key_type='ephemeral',
             jti=jti_to_store
         ).first()
         if existing_ephemeral_key:
-            # You might choose to update it, or return an error. For now, error.
             return jsonify({'error': 'An ephemeral key already exists for this session'}), 409
 
-    # If an identity key, handle potential existing identity keys
     if key_type == 'identity':
-        # Optional: You might want to invalidate or mark previous identity keys as inactive
-        # For simplicity, we just add a new one. Consider a flag like 'is_current_identity' in PublicKey
-        # and update it here, or require old ones to be deleted first.
-        pass # Add logic for managing current identity key if needed
+        # Logic for managing current identity key (e.g., invalidating old one) would go here if needed.
+        # For now, allowing multiple identity keys, client is expected to manage which is 'current'.
+        pass 
 
     try:
-        # Rely on PublicKey model's default for key_uid if not client-provided
         new_key = PublicKey(
-            user_id=user.id, # --- CRITICAL FIX: Use user.id for FK ---
+            user_id=user.id, 
             public_key_pem=public_key_pem,
             key_type=key_type,
             jti=jti_to_store,
-            key_uid=client_provided_key_uid if client_provided_key_uid else str(uuid.uuid4()) # Use client-provided or generate
+            key_uid=client_provided_key_uid if client_provided_key_uid else str(uuid.uuid4())
         )
         db.session.add(new_key)
         db.session.commit()
@@ -75,7 +68,7 @@ def add_public_key():
 
     except Exception as e:
         db.session.rollback()
-        current_app.logger.error(f"Error adding public key: {e}") # Log the error
+        # current_app.logger.error(f"Error adding public key: {e}") # Requires current_app import
         return jsonify({'error': 'Failed to upload public key', 'description': str(e)}), 500
 
 
@@ -85,29 +78,28 @@ def get_user_public_keys():
     """
     Retrieves all public keys (identity and ephemeral) associated with the current user.
     """
-    current_username = get_jwt_identity()
-    user = User.query.filter_by(username=current_username).first()
+    current_user_id = get_jwt_identity() # NEW: Get user ID from JWT
+    user = User.query.get(current_user_id) # NEW: Fetch user by ID
 
     if not user:
-        return jsonify({'error': 'User not found'}), 404
+        return jsonify({'error': 'Authentication failed: User not found.'}), 401
 
-    # --- CRITICAL FIX: Use user.id for FK lookup ---
     keys = PublicKey.query.filter_by(user_id=user.id).order_by(PublicKey.timestamp.desc()).all()
 
     key_list = []
     for key in keys:
         key_data = {
             'key_uid': key.key_uid,
-            'public_key_pem': key.public_key_pem, # Renamed
-            'key_type': key.key_type, # NEW: Include key type
+            'public_key_pem': key.public_key_pem,
+            'key_type': key.key_type,
             'timestamp': key.timestamp.isoformat()
         }
-        if key.jti: # Only include JTI if it exists (relevant for ephemeral keys)
+        if key.jti: 
             key_data['jti'] = key.jti
         key_list.append(key_data)
 
     return jsonify({
-        'username': user.username,
+        'username': user.username, # Still return username for client's convenience
         'public_keys': key_list
     }), 200
 
@@ -120,7 +112,7 @@ def get_recipient_public_key():
     """
     data = request.get_json()
     recipient_username = data.get('username')
-    requested_key_type = data.get('key_type') # 'identity' or 'ephemeral'
+    requested_key_type = data.get('key_type') 
 
     if not recipient_username:
         return jsonify({'error': 'Recipient username is required'}), 400
@@ -131,25 +123,23 @@ def get_recipient_public_key():
     if not recipient:
         return jsonify({'error': 'Recipient not found'}), 404
 
-    # --- CRITICAL FIX & ENHANCEMENT: Fetch specific key type ---
     target_key = None
     if requested_key_type == 'identity':
         # Fetch the most recent identity key for the recipient
         target_key = PublicKey.query.filter_by(
-            user_id=recipient.id, # Corrected FK
+            user_id=recipient.id, 
             key_type='identity'
         ).order_by(PublicKey.timestamp.desc()).first()
         
     elif requested_key_type == 'ephemeral':
         # Fetch the ephemeral key associated with the recipient's *current active session*
-        # This assumes recipient.current_jti is updated on their login.
         if not recipient.current_jti:
             return jsonify({'error': 'Recipient does not have an active session with an ephemeral key'}), 404
         
         target_key = PublicKey.query.filter_by(
-            user_id=recipient.id, # Corrected FK
+            user_id=recipient.id, 
             key_type='ephemeral',
-            jti=recipient.current_jti # Link to their current active session
+            jti=recipient.current_jti 
         ).first()
 
     if not target_key:
@@ -158,9 +148,9 @@ def get_recipient_public_key():
     return jsonify({
         'username': recipient.username,
         'key_uid': target_key.key_uid,
-        'public_key_pem': target_key.public_key_pem, # Renamed
-        'key_type': target_key.key_type, # Include key type
-        'jti': target_key.jti # Include JTI if present
+        'public_key_pem': target_key.public_key_pem,
+        'key_type': target_key.key_type,
+        'jti': target_key.jti 
     }), 200
 
 
@@ -170,11 +160,11 @@ def delete_public_key():
     """
     Deletes a specific public key belonging to the current user.
     """
-    current_username = get_jwt_identity() # Returns username from JWT identity
-    user = User.query.filter_by(username=current_username).first()
+    current_user_id = get_jwt_identity() # NEW: Get user ID from JWT
+    user = User.query.get(current_user_id) # NEW: Fetch user by ID
 
     if not user:
-        return jsonify({'error': 'User not found'}), 404
+        return jsonify({'error': 'Authentication failed: User not found.'}), 401
 
     data = request.get_json()
     key_uid = data.get('key_uid')
@@ -182,23 +172,18 @@ def delete_public_key():
     if not key_uid:
         return jsonify({'error': 'Key_uid is required'}), 400
 
-    # --- CRITICAL FIX: Use user.id for filtering ---
     key_to_delete = PublicKey.query.filter_by(key_uid=key_uid, user_id=user.id).first()
 
     if not key_to_delete:
         return jsonify({'error': 'Key not found or does not belong to the user'}), 404
 
-    # --- SECURITY CONSIDERATION: Prevent deleting the last identity key? ---
-    # If a user always needs at least one 'identity' key to receive messages or verify signatures,
-    # you might want to prevent deletion of the last one, or require a new one to be set first.
-    # For now, allowing deletion of any key that belongs to the user.
+    # SECURITY CONSIDERATION: Preventing deletion of the last identity key.
+    # The current code allows deletion. If you want to enforce that a user
+    # always has at least one 'identity' key, uncomment the logic below:
     if key_to_delete.key_type == 'identity':
-        # Count active identity keys for the user
         remaining_identity_keys = PublicKey.query.filter_by(user_id=user.id, key_type='identity').count()
-        if remaining_identity_keys <= 1: # If this is the last or only identity key
-            # You could enforce: return jsonify({'error': 'Cannot delete the last identity key. Upload a new one first.'}), 400
-            pass # Or add a 'is_current_identity' flag and only delete if not current.
-                 # For now, we allow deletion as per original code logic but raise the flag.
+        if remaining_identity_keys <= 1: 
+            return jsonify({'error': 'Cannot delete the last identity key. Upload a new one first.'}), 400
 
     db.session.delete(key_to_delete)
     db.session.commit()

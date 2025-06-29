@@ -1,18 +1,18 @@
-# server/__init__.py or app.py
+# server/app.py
 import os
-from datetime import timedelta
+from datetime import timedelta, datetime, timezone # Import datetime and timezone
 from flask import Flask, jsonify
 from flask_cors import CORS # Import CORS
-from flask_jwt_extended import JWTManager
+from flask_jwt_extended import JWTManager, get_jwt # get_jwt is needed for JTI retrieval
 from werkzeug.exceptions import HTTPException # Correct import for HTTP exceptions
 
 # --- Import database and blueprints ---
 # Assuming these are in the 'database' and 'routes' subdirectories within 'server'
-from database.db import db, RevokedToken # RevokedToken directly imported for blocklist loader
+# Importing db, RevokedToken, and migrate from database.db
+from database.db import db, RevokedToken, migrate
 from routes.key_routes import key_bp
 from routes.message_routes import message_bp
-from routes.auth_routes import auth_bp 
-# from flask_jwt_extended import create_access_token # Not used here, can remove if not needed
+from routes.auth_routes import auth_bp
 
 
 def create_app():
@@ -24,23 +24,19 @@ def create_app():
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
     # --- CRITICAL SECURITY: JWT Secret Key from Environment Variable ---
-    # In production, ensure JWT_SECRET_KEY is set in your environment
+    # !!! IMPORTANT !!! For production, NEVER hardcode this. Generate a strong, random, and secret key
+    # with `os.urandom(32).hex()` and set it via an environment variable.
     app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'afa7586ad362bcad4509f70402bf766dd8999266ad29fa03084eac8d7b24ba6f') 
-    
-    # Use a strong, random, and secret key. Generate one with `os.urandom(32).hex()`
-    # For production, NEVER hardcode this. Use a proper environment variable.
     if app.config['JWT_SECRET_KEY'] == 'afa7586ad362bcad4509f70402bf766dd8999266ad29fa03084eac8d7b24ba6f':
         app.logger.warning("JWT_SECRET_KEY is using a default/hardcoded value. "
                            "Set it via environment variable for production.")
 
-
     app.config['JWT_ALGORITHM'] = os.getenv('JWT_ALGORITHM', 'HS256')
     app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=int(os.getenv('JWT_ACCESS_TOKEN_EXPIRES_HOURS', 8)))
     
-    # Enable JWT blacklisting for token revocation
-    app.config['JWT_BLACKLIST_ENABLED'] = True
-    app.config['JWT_BLACKLIST_TOKEN_CHECKS'] = ['access']
-    
+    # Configure where Flask-JWT-Extended looks for tokens (e.g., in Authorization header)
+    app.config['JWT_TOKEN_LOCATION'] = ['headers'] # This is the standard location forBearer tokens
+
     # Disable propagation of exceptions from JWT, so our custom error handlers can catch them
     app.config['PROPAGATE_EXCEPTIONS'] = False
 
@@ -53,13 +49,14 @@ def create_app():
     # --- Initialize Extensions ---
     jwt = JWTManager(app)
     db.init_app(app)
+    migrate.init_app(app, db) # Initialize Flask-Migrate with app and db
 
     # --- JWT Token Blocklist Loader ---
     # This function is called by Flask-JWT-Extended to check if a token is revoked.
     @jwt.token_in_blocklist_loader
     def check_if_token_revoked(jwt_header, jwt_payload):
-        # RevokedToken is already imported from database.db
         jti = jwt_payload["jti"]
+        # RevokedToken is already imported from database.db
         return RevokedToken.query.filter_by(jti=jti).first() is not None
 
     # --- Global Error Handler ---
@@ -97,6 +94,10 @@ def create_app():
     app.register_blueprint(message_bp, url_prefix='/message')
 
     # --- Database Initialization (within app context) ---
+    # db.create_all() is fine for initial setup in development.
+    # For production and schema changes, it's recommended to use Flask-Migrate:
+    # flask db migrate -m "Description of changes"
+    # flask db upgrade
     with app.app_context():
         db.create_all() # Creates tables based on your db.Model definitions
 
