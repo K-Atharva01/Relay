@@ -1,53 +1,43 @@
-﻿"""Key management service."""
+"""Key management service."""
 
 from app.extensions import db
-from app.models import PublicKey, User
+from app.models import PublicKey
 
 
-class KeyService:
-    """Service for public key operations."""
+def add_key(user, public_key):
+    """Store a public key for a user and return it."""
+    key = PublicKey(user_id=user.unique_id, public_key=public_key, key_uid="temp")
+    db.session.add(key)
+    db.session.flush()  # Assigns key.id
 
-    @staticmethod
-    def get_user_by_username(username):
-        """Get user by username."""
-        return User.query.filter_by(username=username).first()
+    key.key_uid = f"{user.unique_id}-{key.id}"
+    db.session.commit()
+    return key
 
-    @staticmethod
-    def upload_key(user, public_key):
-        """Upload a public key for a user."""
-        try:
-            # Step 1: Insert with placeholder key_uid
-            placeholder_key = PublicKey(user_id=user.unique_id, public_key=public_key, key_uid="temp")
-            db.session.add(placeholder_key)
-            db.session.flush()  # Get the auto-generated id
 
-            # Step 2: Generate key_uid using user.id and key.id
-            placeholder_key.key_uid = f"{user.unique_id}-{placeholder_key.id}"
-            db.session.commit()
+def get_user_keys(user):
+    """Return all of a user's public keys, newest first."""
+    return PublicKey.query.filter_by(user_id=user.unique_id)\
+                          .order_by(PublicKey.timestamp.desc()).all()
 
-            return placeholder_key, None
-        except Exception as e:
-            db.session.rollback()
-            return None, str(e)
 
-    @staticmethod
-    def get_user_keys(user):
-        """Get all public keys for a user."""
-        return PublicKey.query.filter_by(user_id=user.unique_id).order_by(PublicKey.timestamp.desc()).all()
+def get_latest_key(user):
+    """Return a user's newest public key, or None."""
+    return PublicKey.query.filter_by(user_id=user.unique_id)\
+                          .order_by(PublicKey.timestamp.desc()).first()
 
-    @staticmethod
-    def get_latest_key_for_user(user):
-        """Get the latest public key for a user."""
-        return PublicKey.query.filter_by(user_id=user.unique_id)\
-                             .order_by(PublicKey.timestamp.desc()).first()
 
-    @staticmethod
-    def delete_key(user, key_uid):
-        """Delete a public key for a user."""
-        key = PublicKey.query.filter_by(key_uid=key_uid, user_id=user.unique_id).first()
-        if not key:
-            return False, "Key not found or does not belong to the user"
+def get_user_key(user, key_uid):
+    """Return the key with this key_uid if it belongs to the user, or None."""
+    return PublicKey.query.filter_by(key_uid=key_uid, user_id=user.unique_id).first()
 
-        db.session.delete(key)
-        db.session.commit()
-        return True, None
+
+def delete_key(user, key_uid):
+    """Delete one of the user's keys. Returns False if the user has no such key."""
+    key = get_user_key(user, key_uid)
+    if not key:
+        return False
+
+    db.session.delete(key)
+    db.session.commit()
+    return True

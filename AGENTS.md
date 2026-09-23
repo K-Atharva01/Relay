@@ -21,6 +21,8 @@ The current stack includes:
 - Flask-SQLAlchemy
 - SQLite for local development
 - flask-jwt-extended
+- Flask-Limiter
+- cryptography (public-key validation)
 - Werkzeug password hashing
 
 The repository currently contains the backend/server component. Do not claim that Relay provides complete end-to-end encryption unless the client-side cryptographic implementation actually exists and implements it correctly.
@@ -56,8 +58,7 @@ Relay/
 │   │   ├── __init__.py
 │   │   ├── user.py
 │   │   ├── public_key.py
-│   │   ├── encrypted_message.py
-│   │   └── revoked_token.py
+│   │   └── encrypted_message.py
 │   ├── routes/
 │   │   ├── __init__.py
 │   │   ├── auth.py

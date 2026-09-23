@@ -19,6 +19,8 @@ class User(db.Model):
     email = db.Column(db.String(100), unique=True, nullable=True)
     password_hash = db.Column(db.String(255), nullable=False)
     current_jti = db.Column(db.String(120), nullable=True)
+    # Legacy per-recipient sequence counter. message_uid now uses UUIDs;
+    # the column is kept to avoid a schema migration.
     message_counter = db.Column(db.Integer, default=1)
     current_messages = db.Column(db.Integer, default=0)
 

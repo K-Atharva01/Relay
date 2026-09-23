@@ -5,11 +5,36 @@ Flask application instances.
 """
 
 from flask import Flask, jsonify
-from http.client import HTTPException
+from sqlalchemy import inspect, text
+from werkzeug.exceptions import HTTPException
 
 from app.config import get_config
-from app.extensions import db, jwt, init_extensions, init_jwt_loaders
+from app.extensions import db, jwt, init_extensions, init_jwt_loaders, init_limiter
 from app.routes import auth_bp, key_bp, message_bp
+
+
+def _migrate_schema(engine):
+    """Apply small in-place schema migrations to existing databases.
+
+    Intentional schema change: encrypted_messages.expires_at (message
+    expiry). The column is nullable; rows that predate it never expire.
+    """
+    inspector = inspect(engine)
+    if not inspector.has_table("encrypted_messages"):
+        return
+    columns = {column["name"]
+               for column in inspector.get_columns("encrypted_messages")}
+    if "expires_at" not in columns:
+        with engine.begin() as connection:
+            connection.execute(text(
+                "ALTER TABLE encrypted_messages ADD COLUMN expires_at DATETIME"
+            ))
+
+    # Intentional schema change: revocation moved to User.current_jti
+    # (one session per user), so the append-only table is dropped.
+    if inspector.has_table("revoked_tokens"):
+        with engine.begin() as connection:
+            connection.execute(text("DROP TABLE IF EXISTS revoked_tokens"))
 
 
 def create_app(config_override=None):
@@ -39,6 +64,9 @@ def create_app(config_override=None):
     app.register_blueprint(auth_bp, url_prefix="/auth")
     app.register_blueprint(key_bp, url_prefix="/keys")
     app.register_blueprint(message_bp, url_prefix="/message")
+
+    # Rate limiting must be initialized after blueprints are registered.
+    init_limiter(app)
     
     # Error handlers
     @app.errorhandler(HTTPException)
@@ -53,6 +81,7 @@ def create_app(config_override=None):
     
     @app.errorhandler(Exception)
     def handle_exception(e):
+        app.logger.exception("Unhandled exception")
         return jsonify({
             "error": "Internal Server Error",
             "description": "An unexpected error occurred. Please try again later."
@@ -61,6 +90,7 @@ def create_app(config_override=None):
     # Create database tables
     with app.app_context():
         db.create_all()
+        _migrate_schema(db.engine)
     
     return app
 

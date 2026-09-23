@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # Configuration
-API_URL="http://localhost:5000/keys/delete"
+API_URL="http://localhost:5000/keys/deleteKey"
 TOKEN=$(cat bob.token)
-KEY_UID="1"  # Replace with a valid key_uid
+KEY_UID="USER_UNIQUE_ID-KEY_ID"  # Replace with a valid key_uid (e.g. from /keys/addKey response)
 
 # Make the request
 curl -X POST "$API_URL" \

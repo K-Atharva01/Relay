@@ -1,59 +1,81 @@
-﻿"""Authentication service."""
+"""Authentication service."""
+
+from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
-from app.models import User, RevokedToken
+from app.models import User
 
 
-class AuthService:
-    """Service for authentication operations."""
+def get_user_by_username(username):
+    """Return the user with this username, or None."""
+    return User.query.filter_by(username=username).first()
 
-    @staticmethod
-    def register_user(name, username, password, phone, email):
-        """Register a new user."""
-        # Check if user already exists
-        existing = User.query.filter_by(username=username, phone=phone, email=email).first()
-        if existing:
-            return None, "User already exists"
 
-        new_user = User(
-            name=name,
-            username=username,
-            phone=phone,
-            email=email,
-            password_hash=User.set_password(password)
+def register_user(name, username, password, phone, email):
+    """Register a new user. Returns (user, None) or (None, error message)."""
+
+    # Check whether any unique field is already in use.
+    existing = User.query.filter(
+        or_(
+            User.username == username,
+            User.phone == phone,
+            User.email == email,
         )
+    ).first()
 
-        db.session.add(new_user)
+    if existing:
+        # Generic message: do not reveal which field is already taken.
+        return None, "Username, phone, or email already exists"
+
+    new_user = User(
+        name=name,
+        username=username,
+        phone=phone,
+        email=email,
+        password_hash=User.set_password(password)
+    )
+
+    db.session.add(new_user)
+
+    try:
         db.session.commit()
-        return new_user, None
+    except IntegrityError:
+        # Protect against a race condition where another request
+        # inserts the same unique value between our check and commit.
+        db.session.rollback()
+        return None, "Username, phone, or email already exists"
 
-    @staticmethod
-    def authenticate_user(username, password):
-        """Authenticate user and return user object if valid."""
-        user = User.query.filter_by(username=username).first()
-        if not user or not user.check_password(password):
-            return None
-        return user
+    return new_user, None
 
-    @staticmethod
-    def revoke_previous_token(user):
-        """Revoke previous JWT token if exists."""
-        if user.current_jti:
-            revoked = RevokedToken(jti=user.current_jti)
-            db.session.add(revoked)
 
-    @staticmethod
-    def update_user_token_jti(user, new_jti):
-        """Update user's current JWT ID."""
-        user.current_jti = new_jti
-        db.session.commit()
+def authenticate_user(username, password):
+    """Return the user if the credentials are valid, otherwise None."""
+    user = get_user_by_username(username)
 
-    @staticmethod
-    def logout_token(jti):
-        """Revoke a token."""
-        if not RevokedToken.query.filter_by(jti=jti).first():
-            revoked_token = RevokedToken(jti=jti)
-            db.session.add(revoked_token)
-            db.session.commit()
-            return True
+    if not user or not user.check_password(password):
+        return None
+
+    return user
+
+
+def start_session(user, new_jti):
+    """Make new_jti the user's only valid token (one session per user).
+
+    Rotating current_jti implicitly invalidates any previous token.
+    """
+    user.current_jti = new_jti
+    db.session.commit()
+
+
+def end_session(user, jti):
+    """Clear the user's session when jti is the current one.
+
+    Returns True when the session was ended, False when jti was not
+    the current session (and is therefore already invalid).
+    """
+    if user.current_jti != jti:
         return False
+    user.current_jti = None
+    db.session.commit()
+    return True

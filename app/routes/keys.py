@@ -1,57 +1,82 @@
-﻿"""Key management routes."""
+"""Key management routes."""
 
-from flask import Blueprint, request, jsonify
-from flask_jwt_extended import jwt_required, get_jwt_identity
+from flask import Blueprint, jsonify
+from flask_jwt_extended import (
+    current_user,
+    get_jwt_identity,
+    jwt_required,
+    verify_jwt_in_request,
+)
+from flask_jwt_extended.exceptions import JWTExtendedException
+from flask_limiter.util import get_remote_address
+from jwt.exceptions import PyJWTError
 
-from app.extensions import db
-from app.models import PublicKey, User
+from app.extensions import limiter
+from app.services import auth as auth_service
+from app.services import keys as key_service
+from app.utils.keys import validate_public_key
+from app.utils.request import get_json_object, get_str
 
 key_bp = Blueprint("keys", __name__)
 
 
+def _add_key_rate_limit_key():
+    """Per-account rate-limit key: token's username, else client IP."""
+    try:
+        verify_jwt_in_request()
+        return f"user:{get_jwt_identity()}"
+    except (JWTExtendedException, PyJWTError):
+        # jwt_required() rejects the request; this key is never used for a real attempt.
+        return f"ip:{get_remote_address()}"
+
+
+def _count_wrong_password(response):
+    """Only wrong passwords consume the per-account quota."""
+    return response.status_code == 403
+
+
 @key_bp.route("/addKey", methods=["POST"])
+@limiter.limit(
+    "5 per minute",
+    key_func=_add_key_rate_limit_key,
+    deduct_when=_count_wrong_password,
+)
 @jwt_required()
 def upload_key():
-    """Upload a public key for the authenticated user."""
-    current_user = get_jwt_identity()
-    user = User.query.filter_by(username=current_user).first()
+    """Upload a public key for the authenticated user.
 
-    if not user:
-        return jsonify({"error": "User not found"}), 404
+    Requires the account password as well as the JWT, so a stolen token alone
+    cannot replace the key that senders encrypt to. This does not stop a
+    malicious server or anyone with database write access from substituting a
+    key; that needs client-side fingerprint checks.
+    """
+    data = get_json_object()
+    public_key = get_str(data, "public_key")
+    password = get_str(data, "password")
 
-    data = request.get_json()
-    public_key = data.get("public_key")
     if not public_key:
         return jsonify({"error": "Public key is required"}), 400
 
-    try:
-        # Step 1: Insert with placeholder key_uid
-        placeholder_key = PublicKey(user_id=user.unique_id, public_key=public_key, key_uid="temp")
-        db.session.add(placeholder_key)
-        db.session.flush()  # Get the auto-generated id
+    if not password:
+        return jsonify({"error": "Password is required"}), 400
 
-        # Step 2: Generate key_uid using user.id and key.id
-        placeholder_key.key_uid = f"{user.unique_id}-{placeholder_key.id}"
-        db.session.commit()
+    if not current_user.check_password(password):
+        return jsonify({"error": "Invalid password"}), 403
 
-        return jsonify({"message": "Public key uploaded successfully", "key_uid": placeholder_key.key_uid}), 201
+    key_error = validate_public_key(public_key)
+    if key_error:
+        return jsonify({"error": key_error}), 400
 
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({"error": "DB error", "description": str(e)}), 500
+    key = key_service.add_key(current_user, public_key)
+
+    return jsonify({"message": "Public key uploaded successfully", "key_uid": key.key_uid}), 201
 
 
 @key_bp.route("/getAllKeys", methods=["GET"])
 @jwt_required()
 def get_keys():
     """Get all public keys for the authenticated user."""
-    current_user = get_jwt_identity()
-
-    user = User.query.filter_by(username=current_user).first()
-    if not user:
-        return jsonify({"error": "User not found"}), 404
-
-    keys = PublicKey.query.filter_by(user_id=user.unique_id).order_by(PublicKey.timestamp.desc()).all()
+    keys = key_service.get_user_keys(current_user)
 
     key_list = [{
         "key_uid": key.key_uid,
@@ -60,7 +85,7 @@ def get_keys():
     } for key in keys]
 
     return jsonify({
-        "username": user.username,
+        "username": current_user.username,
         "public_keys": key_list
     }), 200
 
@@ -69,18 +94,16 @@ def get_keys():
 @jwt_required()
 def get_recipient_public_key():
     """Fetch the latest public key for a recipient."""
-    data = request.get_json()
-    recipient_username = data.get("username")
+    recipient_username = get_str(get_json_object(), "username")
 
     if not recipient_username:
         return jsonify({"error": "Recipient username required"}), 400
 
-    recipient = User.query.filter_by(username=recipient_username).first()
+    recipient = auth_service.get_user_by_username(recipient_username)
     if not recipient:
         return jsonify({"error": "Recipient not found"}), 404
 
-    latest_key = PublicKey.query.filter_by(user_id=recipient.unique_id)\
-                                .order_by(PublicKey.timestamp.desc()).first()
+    latest_key = key_service.get_latest_key(recipient)
 
     if not latest_key:
         return jsonify({"error": "No public key found for recipient"}), 404
@@ -96,24 +119,12 @@ def get_recipient_public_key():
 @jwt_required()
 def delete_key():
     """Delete a public key for the authenticated user."""
-    current_user = get_jwt_identity()
-    data = request.get_json()
-    key_uid = data.get("key_uid")
+    key_uid = get_str(get_json_object(), "key_uid")
 
     if not key_uid:
         return jsonify({"error": "key_uid is required"}), 400
 
-    # Get user by username first, then filter by user's unique_id
-    current_user_obj = User.query.filter_by(username=current_user).first()
-    if not current_user_obj:
-        return jsonify({"error": "User not found"}), 404
-
-    key = PublicKey.query.filter_by(key_uid=key_uid, user_id=current_user_obj.unique_id).first()
-
-    if not key:
+    if not key_service.delete_key(current_user, key_uid):
         return jsonify({"error": "Key not found or does not belong to the user"}), 404
-
-    db.session.delete(key)
-    db.session.commit()
 
     return jsonify({"message": "Key deleted successfully"}), 200

@@ -17,6 +17,9 @@ class EncryptedMessage(db.Model):
     encrypted_message = db.Column(db.Text, nullable=False)
     key_uid = db.Column(db.String(100), nullable=False)
     timestamp = db.Column(db.DateTime, server_default=db.func.now())
+    # When this ciphertext expires (naive UTC). NULL = never expires
+    # (messages that predate the column, or MESSAGE_TTL_DAYS=0).
+    expires_at = db.Column(db.DateTime, nullable=True)
 
     # Relationships
     sender = relationship("User", foreign_keys=[sender_id], backref="sent_messages")

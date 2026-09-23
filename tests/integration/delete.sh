@@ -1,7 +1,7 @@
 #!/bin/bash
 
 TOKEN=$(cat bob.token)
-MESSAGE_UID="1"  # Replace with actual UID from inbox
+MESSAGE_UID="REPLACE_WITH_UUID_FROM_INBOX"  # e.g. from GET /message/inbox
 
 curl -X POST http://192.168.0.200:5000/message/inbox/deleteMessage \
   -H "Authorization: Bearer $TOKEN" \
