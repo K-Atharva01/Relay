@@ -1,206 +1,119 @@
 # Relay
 
-Relay is a Flask REST API for exchanging credentials and sensitive information as **public-key-encrypted messages**.
+A small personal cybersecurity project exploring **public-key cryptography, authentication, and secure message exchange**.
 
-The Relay server acts as a trusted communication intermediary for authentication, public-key discovery, ciphertext storage, and message delivery. The sensitive cryptographic operations are intended to happen on the client side, keeping private keys and plaintext credentials outside the Relay server.
+Relay is a Flask-based backend that allows users to authenticate, register public keys, and exchange encrypted messages without the server needing to handle the plaintext message.
 
-> **Current status:** Relay currently implements the backend/server component. The client-side key generation, encryption, and decryption implementation is not yet part of this repository.
+> **Note:** Relay is a learning/personal project and is not intended to be a production-ready secure messaging system. Client-side encryption and decryption are not currently implemented in this repository.
 
 ---
 
-## Overview
-
-The basic Relay workflow is:
+## How It Works
 
 ```text
-                         Relay Server
-                    ┌────────────────────┐
-                    │                    │
-                    │ Authentication     │
-                    │ Public-key lookup  │
-                    │ Ciphertext storage │
-                    │ Message routing    │
-                    │                    │
-                    └─────────┬──────────┘
-                              │
-                 ciphertext only
-                              │
-             ┌────────────────┴────────────────┐
-             │                                 │
-          Sender                           Recipient
-             │                                 │
-       Encrypt locally                    Decrypt locally
-````
-
-The intended trust boundary is:
-
-```text
-Sender Client
-    │
-    │ plaintext
-    ▼
-Client-side encryption
-    │
-    │ ciphertext
-    ▼
-Relay Server
-    │
-    │ store / route ciphertext
-    ▼
-Recipient Client
-    │
-    │ client-side decryption
-    ▼
-plaintext
+┌──────────────┐                         ┌──────────────┐
+│   Client A   │                         │   Client B   │
+│              │                         │              │
+│ Private Key  │                         │ Private Key  │
+│ Public Key   │                         │ Public Key   │
+└──────┬───────┘                         └──────▲───────┘
+       │                                        │
+       │ Register Public Key                    │ Fetch Public Key
+       │                                        │
+       ▼                                        │
+┌────────────────────────────────────────────────────┐
+│                      Relay                         │
+│                    Flask API                       │
+│                                                    │
+│  Authentication │ Public Keys │ Encrypted Messages │
+│                                                    │
+│                     SQLite                         │
+└────────────────────────────────────────────────────┘
+       │
+       │ Encrypted Message
+       ▼
+   Recipient's Inbox
 ```
 
-Relay should therefore never need access to a user's private key or plaintext credential.
+The basic flow is:
+
+1. A user creates an account.
+2. The user authenticates and receives a JWT.
+3. The user's public key is registered with Relay.
+4. A sender retrieves the recipient's public key.
+5. The sender encrypts a message using the recipient's public key.
+6. The encrypted ciphertext is sent to Relay.
+7. Relay stores and forwards the ciphertext.
+8. The recipient retrieves the ciphertext and decrypts it using their private key.
+
+The server is intended to act as a **relay and key directory**, rather than as a place where plaintext messages are processed.
 
 ---
 
 ## Features
 
-The current backend provides:
-
-* User registration
-* Password hashing
+* User registration and authentication
 * JWT-based authentication
-* JWT revocation
+* Password hashing using Werkzeug
 * Public-key registration
-* Public-key discovery
-* Unique identifiers for registered keys
-* Encrypted message submission
-* Recipient inbox
-* Individual message retrieval
-* Message deletion
-* User-scoped message authorization
-* User-scoped key management
+* Public-key lookup
+* Encrypted message storage and relay
+* Per-user message inbox
+* Message retrieval and deletion
+* SQLite database
+* Basic API testing with shell scripts
 
 ---
 
-## Technology Stack
+## Tech Stack
 
 | Component        | Technology                    |
 | ---------------- | ----------------------------- |
-| Language         | Python                        |
-| Web framework    | Flask                         |
-| ORM              | Flask-SQLAlchemy / SQLAlchemy |
+| Backend          | Python / Flask                |
 | Database         | SQLite                        |
-| Authentication   | `flask-jwt-extended`          |
+| ORM              | SQLAlchemy / Flask-SQLAlchemy |
+| Authentication   | JWT                           |
 | Password hashing | Werkzeug                      |
-| API testing      | `curl` + `jq`                 |
-| Environment      | Python virtual environment    |
-
-SQLite is currently intended for local development.
+| Testing          | Shell scripts, `curl`, `jq`   |
 
 ---
 
 ## Project Structure
 
-The project follows a conventional Flask application structure:
-
 ```text
 Relay/
 ├── app/
-│   ├── __init__.py
+│   ├── models/
+│   ├── routes/
+│   ├── services/
+│   ├── utils/
 │   ├── config.py
 │   ├── extensions.py
-│   ├── models/
-│   │   ├── __init__.py
-│   │   ├── user.py
-│   │   ├── public_key.py
-│   │   ├── encrypted_message.py
-│   │   └── revoked_token.py
-│   ├── routes/
-│   │   ├── __init__.py
-│   │   ├── auth.py
-│   │   ├── keys.py
-│   │   └── messages.py
-│   ├── services/
-│   │   ├── __init__.py
-│   │   ├── auth.py
-│   │   ├── keys.py
-│   │   └── messages.py
-│   └── utils/
-│       ├── __init__.py
-│       └── ...
+│   └── __init__.py
+│
 ├── tests/
-│   ├── unit/
-│   ├── integration/
-│   └── fixtures/
 ├── scripts/
-├── migrations/
 ├── instance/
 ├── .env.example
 ├── .gitignore
 ├── requirements.txt
+├── run.py
 ├── AGENTS.md
-├── DESIGN.md
-├── README.md
-└── run.py
+└── README.md
 ```
-
-### Application
-
-`app/` contains the Flask application.
-
-### Models
-
-`app/models/` contains the database models:
-
-* `User`
-* `PublicKey`
-* `EncryptedMessage`
-* `RevokedToken`
-
-### Routes
-
-`app/routes/` contains the HTTP API endpoints:
-
-* `auth.py` — authentication and account endpoints
-* `keys.py` — public-key management
-* `messages.py` — encrypted message operations
-
-### Services
-
-`app/services/` contains business logic and database operations that should not be tied directly to HTTP request handling.
-
-### Tests
-
-`tests/` contains automated tests and integration tests.
-
-### Instance
-
-`instance/` contains local runtime data such as the SQLite database.
-
-Runtime data in `instance/` should not be committed to Git.
 
 ---
 
-# Installation
+## Running Relay Locally
 
-## Requirements
-
-You need:
-
-* Python 3
-* `pip`
-* `venv`
-* `git`
-
-Verify Python:
+### 1. Clone the repository
 
 ```bash
-python3 --version
+git clone https://github.com/K-Atharva01/Relay.git
+cd Relay
 ```
 
----
-
-## Create a Virtual Environment
-
-Relay should be run and tested inside a Python virtual environment.
-
-From the project directory:
+### 2. Create a virtual environment
 
 ```bash
 python3 -m venv .venv
@@ -208,499 +121,194 @@ python3 -m venv .venv
 
 Activate it:
 
-### Linux/macOS
+**Linux/macOS**
 
 ```bash
 source .venv/bin/activate
 ```
 
-### Windows PowerShell
+**Windows**
 
 ```powershell
-py -m venv .venv
-.venv\Scripts\Activate.ps1
+.venv\Scripts\activate
 ```
 
-Upgrade `pip`:
-
-```bash
-python -m pip install --upgrade pip
-```
-
----
-
-## Install Dependencies
-
-Install the pinned project dependencies:
+### 3. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Verify the environment:
+### 4. Configure environment variables
 
-```bash
-pip list
-```
-
-The virtual environment should be used whenever developing, testing, or running Relay locally.
-
----
-
-# Configuration
-
-Relay uses environment variables for configuration.
-
-Create a local `.env` based on `.env.example`.
-
-Example:
-
-```env
-JWT_SECRET_KEY=replace-with-a-random-secret
-DATABASE_URL=sqlite:///instance/relay.db
-FLASK_DEBUG=0
-```
-
-Never commit `.env`.
-
-Generate a strong JWT signing secret, for example:
-
-```bash
-python -c "import secrets; print(secrets.token_hex(32))"
-```
-
-The JWT secret must be kept private.
-
-If a secret has previously been committed to Git, changing `.gitignore` is not sufficient. The secret should be considered compromised and rotated.
-
----
-
-# Running Relay
-
-Activate the virtual environment first:
-
-```bash
-source .venv/bin/activate
-```
-
-Then start the application using the project's entry point:
-
-```bash
-python run.py
-```
-
-The exact host and port are controlled by the application's configuration.
-
-For local development, the Flask development server may be used.
-
-Do **not** expose the Flask development server directly to the public internet.
-
-For network-accessible deployments, use a production WSGI server such as Gunicorn behind an appropriate TLS-terminating reverse proxy or ingress.
-
----
-
-# API Architecture
-
-Relay exposes three primary API areas:
-
-```text
-/auth
-/keys
-/message
-```
-
-The high-level flow is:
-
-```text
-                    ┌───────────────┐
-                    │     Relay     │
-                    └───────┬───────┘
-                            │
-          ┌─────────────────┼─────────────────┐
-          │                 │                 │
-          ▼                 ▼                 ▼
-       /auth             /keys            /message
-          │                 │                 │
-      Accounts        Public keys       Ciphertext
-      JWT auth        Key discovery      mailbox
-```
-
----
-
-# Authentication Flow
-
-A user first registers an account.
-
-```text
-Client
-  │
-  │ POST /auth/register
-  ▼
-Relay
-  │
-  │ password hashing
-  ▼
-User database record
-```
-
-Passwords are stored as hashes rather than plaintext passwords.
-
-After registration, the user can authenticate:
-
-```text
-Client
-  │
-  │ POST /auth/login
-  ▼
-Relay
-  │
-  │ validate credentials
-  ▼
-JWT
-```
-
-The JWT is then supplied as a Bearer token for protected API requests.
-
-Relay also tracks token JTIs for revocation.
-
-Logging in again can invalidate the previous session, and logging out revokes the current token.
-
----
-
-# Public-Key Flow
-
-A client can register a public key with Relay:
-
-```text
-Client
-  │
-  │ public key
-  ▼
-Relay
-  │
-  ├── store public key
-  └── assign key identifier
-```
-
-The corresponding private key must remain on the client.
-
-When a sender wants to send something to another user:
-
-```text
-Sender
-   │
-   │ request recipient's public key
-   ▼
-Relay
-   │
-   │ public key + key_uid
-   ▼
-Sender
-```
-
-The sender can then use the recipient's public key for client-side encryption.
-
----
-
-# Message Flow
-
-The intended message flow is:
-
-```text
-1. Sender authenticates
-        │
-        ▼
-2. Sender obtains recipient public key
-        │
-        ▼
-3. Sender encrypts plaintext locally
-        │
-        ▼
-4. Sender sends ciphertext to Relay
-        │
-        ▼
-5. Relay stores ciphertext
-        │
-        ▼
-6. Recipient requests inbox
-        │
-        ▼
-7. Relay returns ciphertext
-        │
-        ▼
-8. Recipient decrypts locally
-```
-
-Relay is therefore intended to handle the **transport and storage of ciphertext**, not plaintext credentials.
-
----
-
-# Security Model
-
-The intended security model is based on keeping private cryptographic material on the client.
-
-The Relay server may know:
-
-* user accounts
-* usernames
-* public keys
-* key identifiers
-* sender/recipient relationships
-* timestamps
-* ciphertext
-* authentication metadata
-
-The Relay server should not possess:
-
-* client private keys
-* plaintext credentials
-* plaintext messages
-
-A compromise of the Relay database should therefore not directly reveal message plaintext, assuming the client-side cryptographic implementation and key protection are correctly implemented.
-
-> This property depends on the client-side cryptographic protocol. The current repository does not itself implement the complete client-side encryption/decryption system.
-
----
-
-# Key Trust
-
-Public-key discovery and cryptographic identity verification are separate concerns.
-
-The server returning:
-
-```text
-Bob's public key
-```
-
-does not by itself prove that the key genuinely belongs to Bob if the server or its database has been compromised.
-
-A future client implementation should address key authenticity through mechanisms such as:
-
-* key fingerprints
-* key pinning
-* authenticated key rotation
-* certificates
-* digital signatures
-
-The exact protocol should follow `DESIGN.md`.
-
-Relay should use established cryptographic libraries rather than implementing cryptographic primitives itself.
-
----
-
-# Authorization
-
-Authentication and authorization are separate.
-
-A valid JWT proves that a request is associated with an authenticated account.
-
-It does **not** automatically grant access to another user's resources.
-
-Message operations must remain scoped to the authenticated recipient.
+Create a `.env` file based on `.env.example`.
 
 For example:
 
-```text
-Alice JWT
-   │
-   ├── Alice's messages     ✓
-   ├── Alice's keys        ✓
-   └── Bob's messages      ✗
+```env
+JWT_SECRET_KEY=change-this-secret
 ```
 
-The same principle applies to public-key management.
+Do not commit `.env` or real secrets to Git.
 
----
-
-# Development
-
-Activate the virtual environment:
-
-```bash
-source .venv/bin/activate
-```
-
-Install dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-Run the application:
+### 5. Start the application
 
 ```bash
 python run.py
 ```
 
-Before submitting changes:
-
-1. Run the test suite.
-2. Verify the application starts.
-3. Verify affected API endpoints.
-4. Check `git status`.
-5. Ensure no secrets or generated files are tracked.
+The API should then be available locally.
 
 ---
 
-# Testing
-
-Relay currently uses API-level tests based on `curl` and `jq`, with Python tests intended for maintainable unit/integration coverage.
-
-Run the available test suite from the activated virtual environment.
-
-Tests should cover at least:
+## API
 
 ### Authentication
 
-* registration
-* login
-* invalid credentials
-* missing registration fields
-* duplicate users
-* logout
-* token revocation
+```http
+POST /auth/register
+POST /auth/login
+POST /auth/logout
+```
 
-### Keys
+Registration creates a user account, while login returns a JWT used to authenticate subsequent requests.
 
-* public-key registration
-* public-key lookup
-* key ownership
-* key deletion
-* invalid key input
+---
+
+### Public Keys
+
+```http
+POST /keys/addKey
+POST /keys/fetchPublicKey
+```
+
+Users can register a public key with Relay and retrieve another user's public key when sending a message.
+
+---
 
 ### Messages
 
-* sending messages
-* inbox retrieval
-* individual message retrieval
-* message deletion
-* unauthorized message access
-* invalid recipient/key identifiers
-
-Tests must use generated or temporary test data.
-
-Never commit real passwords, JWT tokens, private keys, or production credentials.
-
----
-
-# Database
-
-SQLite is currently used for local development.
-
-The local database is stored under:
-
-```text
-instance/
+```http
+POST /message/send
+GET  /message/inbox
+POST /message/getMessageById
+POST /message/delete
 ```
 
-Database files are runtime state and must not be committed.
+Messages stored by Relay are intended to be ciphertext.
 
-Database schema changes should be handled through migrations rather than manually modifying production databases.
-
----
-
-# Production Considerations
-
-The Flask development server is not intended for production deployment.
-
-A network-accessible Relay deployment should use:
+A simplified message flow looks like:
 
 ```text
-Internet
-    │
-    ▼
-TLS / Reverse Proxy
-    │
-    ▼
-WSGI Server
-    │
-    ▼
-Flask Application
-    │
-    ▼
-Database
+Sender
+  │
+  │ Encrypt using recipient's public key
+  ▼
+Ciphertext
+  │
+  │ POST /message/send
+  ▼
+Relay
+  │
+  │ Stores ciphertext
+  ▼
+Recipient Inbox
+  │
+  │ Retrieve ciphertext
+  ▼
+Recipient
+  │
+  │ Decrypt using private key
+  ▼
+Plaintext
 ```
 
-Possible components include:
-
-* Nginx
-* Caddy
-* Tailscale Serve
-* Gunicorn
-
-TLS should terminate before requests reach the Flask application when appropriate.
-
-Debug mode must be disabled.
-
-Secrets must be supplied through environment variables or a dedicated secret-management system.
-
 ---
 
-# Current Limitations
+## Security Model
 
-The current backend does not yet implement the complete client-side cryptographic protocol.
+The main idea behind Relay is to keep the **cryptographic boundary on the client**.
 
-In particular, the repository does not currently provide the complete:
-
-* client-side key generation
-* client-side encryption
-* client-side decryption
-* identity-key infrastructure
-* certificate infrastructure
-* signature generation
-* signature verification
-* authenticated key rotation
-
-These are separate parts of the planned Relay architecture.
-
----
-
-# Security Issues
-
-Relay is an active development project.
-
-Known areas requiring further hardening include:
-
-* secret management
-* production debug configuration
-* error handling
-* input validation
-* authentication rate limiting
-* public-key authenticity
-* public-key validation
-* message ID generation under concurrency
-* message expiration and pagination
-* revoked-token cleanup
-* TLS deployment
-* dependency pinning and auditing
-
-These should be addressed systematically rather than assuming the current implementation is production-ready.
-
----
-
-# Development Philosophy
-
-Relay is intended to remain relatively small and understandable.
-
-Prefer:
+Ideally:
 
 ```text
-simple Flask application
-        +
-clear trust boundaries
-        +
-well-defined API
-        +
-established cryptographic libraries
-        +
-strong authorization
-        +
-good tests
+Private Key
+    │
+    └── stays with the user
+
+Public Key
+    │
+    └── registered with Relay
+
+Plaintext
+    │
+    └── handled by the client
+
+Ciphertext
+    │
+    └── stored/forwarded by Relay
 ```
 
-over unnecessary infrastructure or abstraction.
+Relay therefore does not need to know the contents of a message in order to deliver it.
 
-Do not introduce distributed services or complex infrastructure unless the project's requirements actually justify them.
+However, the current repository is primarily the **backend portion of this design**. The client-side cryptographic implementation is not currently included.
 
 ---
 
+## Current Limitations
+
+Relay is still a work in progress.
+
+Some parts of the larger cryptographic design are not implemented yet, including:
+
+* Client-side key generation
+* Actual message encryption/decryption
+* Cryptographic message signatures
+* Identity-key infrastructure
+* Ephemeral session keys
+* Certificate/CA infrastructure
+* Key rotation
+* Strong cryptographic verification of public-key authenticity
+
+The current API demonstrates the backend concepts and message-relay workflow, but should **not be considered a complete end-to-end encrypted messaging system**.
+
+---
+
+## What This Project Explores
+
+Relay was built as a practical way to explore concepts around:
+
+* Public-key cryptography
+* Secure credential exchange
+* JWT authentication
+* Password hashing
+* Public-key management
+* Encrypted message transport
+* Authentication vs. encryption
+* Server/client trust boundaries
+* API authorization
+* Secure application design
+
+---
+
+## Future Improvements
+
+Some planned improvements include:
+
+* Implementing the client-side cryptographic layer
+* Improving public-key authenticity and verification
+* Adding message signatures
+* Supporting key rotation
+* Introducing ephemeral session keys
+* Improving validation and error handling
+* Adding rate limiting
+* Adding message expiration
+* Improving automated tests
+
+---
+
+## Status
+
+**Personal project / work in progress**
+
+Relay is primarily an experiment and learning project focused on understanding how a backend can support cryptographic message exchange while keeping sensitive plaintext and private keys outside the server.
