@@ -2,7 +2,7 @@
 """Interactive Relay API test client.
 
 Run:
-    python scripts/relay_client.py
+    python client.py
 
 Provides:
 - Automated end-to-end Alice -> Bob flow
@@ -10,19 +10,42 @@ Provides:
 - Runtime token/key/message state
 - Configurable Relay base URL
 
-Uses only Python standard-library modules.
+HTTPS connections trust only the server's pinned certificate
+(RELAY_CA_FILE, default instance/tls/cert.pem), never the system CAs.
+Plain http:// is allowed only for loopback addresses.
+
+"Add public key" can generate an RSA key pair; the private key is saved
+outside the repository in RELAY_KEY_DIR (default ~/.relay/keys).
+
+"Send message" can encrypt a typed message to the recipient's latest
+public key (JWE, RSA-OAEP-256 + AES-256-GCM) before sending, and "Get
+message" can decrypt it with the matching local private key. This is
+encryption only: messages are not signed, so the recipient cannot verify
+who sent them beyond what the server reports.
+
+Uses Python standard-library modules, plus the project's `cryptography`
+and `jwcrypto` dependencies for keys and encryption.
 """
 
 import getpass
+import ipaddress
 import json
 import os
+import ssl
 import sys
 import uuid
+from datetime import datetime
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
 
-BASE_URL = os.environ.get("RELAY_BASE_URL", "http://127.0.0.1:5000").rstrip("/")
+ROOT = os.path.dirname(os.path.abspath(__file__))
+BASE_URL = os.environ.get("RELAY_BASE_URL", "https://127.0.0.1:5000").rstrip("/")
+CA_FILE = os.environ.get("RELAY_CA_FILE", os.path.join(ROOT, "instance", "tls", "cert.pem"))
+# Server-side cap on a stored message (app/routes/messages.py).
+MAX_MESSAGE_CHARS = 5000
+# Generated key pairs are kept outside the repository so private keys are never committed.
+KEY_DIR = os.environ.get("RELAY_KEY_DIR", os.path.join(os.path.expanduser("~"), ".relay", "keys"))
 state = {"tokens": {}, "keys": {}, "messages": {}}
 
 # A valid RSA-2048 public key for automated tests. Public keys are not
@@ -45,6 +68,30 @@ def parse(raw):
         return raw
 
 
+def _is_loopback(host):
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def check_base_url(url):
+    """Return an error message if url is not safe to send credentials to, else None."""
+    parts = urlsplit(url)
+    if parts.scheme == "https":
+        return None
+    if parts.scheme == "http" and _is_loopback(parts.hostname or ""):
+        return None
+    return "Use https:// (plain http:// is only allowed for loopback addresses)"
+
+
+def tls_context():
+    """SSL context that trusts only the pinned server certificate."""
+    return ssl.create_default_context(cafile=CA_FILE)
+
+
 def api(method, path, body=None, token=None):
     headers = {"Accept": "application/json"}
     data = None
@@ -54,10 +101,23 @@ def api(method, path, body=None, token=None):
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
+    error = check_base_url(BASE_URL)
+    if error:
+        print(f"[CONFIG ERROR] {error}")
+        return None, None
+    context = None
+    if BASE_URL.startswith("https://"):
+        try:
+            context = tls_context()
+        except (FileNotFoundError, ssl.SSLError) as e:
+            print(f"[TLS ERROR] cannot load pinned certificate {CA_FILE}: {e}")
+            return None, None
+
     try:
         with urlopen(
             Request(BASE_URL + path, data=data, headers=headers, method=method),
             timeout=10,
+            context=context,
         ) as r:
             return r.status, parse(r.read().decode(errors="replace"))
     except HTTPError as e:
@@ -81,17 +141,29 @@ def show(label, status, data, expected=None):
 
 
 def pick_token():
+    """Return the token to act as.
+
+    With one logged-in user, use it without asking. With several, ask,
+    defaulting (Enter) to the user acted as last time.
+    """
     if not state["tokens"]:
         print("No logged-in users. Login first.")
         return None
     users = list(state["tokens"])
-    for i, u in enumerate(users, 1):
-        print(f"{i}. {u}")
-    try:
-        return state["tokens"][users[int(input("Choose user: ")) - 1]]
-    except (ValueError, IndexError):
-        print("Invalid selection.")
-        return None
+    current = state.get("current") if state.get("current") in users else users[-1]
+    if len(users) > 1:
+        for i, u in enumerate(users, 1):
+            print(f"{i}. {u}{' (current)' if u == current else ''}")
+        raw = input(f"Act as [{current}]: ").strip()
+        if raw:
+            try:
+                current = users[int(raw) - 1]
+            except (ValueError, IndexError):
+                print("Invalid selection.")
+                return None
+    state["current"] = current
+    print(f"Acting as {current}.")
+    return state["tokens"][current]
 
 
 def pick_stored(label, options):
@@ -145,7 +217,8 @@ def login():
     token = value(d, "access_token", "token", "jwt")
     if ok and token:
         state["tokens"][username] = token
-        print(f"Token stored for {username}.")
+        state["current"] = username
+        print(f"Token stored for {username}; now acting as {username}.")
     return ok
 
 
@@ -162,19 +235,177 @@ def logout():
     return ok
 
 
-def add_key():
-    token = pick_token()
-    if not token:
-        return False
-    username = next(u for u, t in state["tokens"].items() if t == token)
+def _key_index_path():
+    return os.path.join(KEY_DIR, "index.json")
+
+
+def load_key_index():
+    """Return {key_uid: private key path} for keys generated by this client."""
+    try:
+        with open(_key_index_path(), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def remember_private_key(key_uid, private_path):
+    """Record which local private key file belongs to an uploaded key_uid."""
+    index = load_key_index()
+    index[key_uid] = private_path
+    os.makedirs(KEY_DIR, exist_ok=True)
+    with open(_key_index_path(), "w", encoding="utf-8") as f:
+        json.dump(index, f, indent=2)
+
+
+def generate_key_pair(username):
+    """Generate an RSA key pair; save both halves under KEY_DIR.
+
+    Returns (public PEM string, private key path), or (None, None).
+
+    The private key never leaves this machine and is stored outside the
+    repository (owner-only file, optionally passphrase-encrypted).
+    """
+    try:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+    except ImportError:
+        print("[ERROR] Key generation needs the 'cryptography' package "
+              "(pip install -r requirements.txt).")
+        return None, None
+
+    bits_raw = input("Key size in bits (2048/3072/4096) [3072]: ").strip() or "3072"
+    if bits_raw not in ("2048", "3072", "4096"):
+        print("Invalid key size.")
+        return None, None
+    passphrase = getpass.getpass("Passphrase to encrypt the private key (Enter for none): ")
+    if passphrase and getpass.getpass("Repeat passphrase: ") != passphrase:
+        print("Passphrases do not match.")
+        return None, None
+
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=int(bits_raw))
+    encryption = (serialization.BestAvailableEncryption(passphrase.encode())
+                  if passphrase else serialization.NoEncryption())
+    private_pem = private_key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, encryption)
+    public_pem = private_key.public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+
+    os.makedirs(KEY_DIR, exist_ok=True)
+    # Random suffix: two keys generated within the same second must not collide.
+    stem = os.path.join(
+        KEY_DIR, f"{username}-{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}")
+    fd = os.open(f"{stem}-private.pem", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(private_pem)
+    with open(f"{stem}-public.pem", "wb") as f:
+        f.write(public_pem)
+
+    print(f"Private key: {stem}-private.pem"
+          + ("" if passphrase else "  (NOT encrypted; keep it safe)"))
+    print(f"Public key:  {stem}-public.pem")
+    return public_pem.decode(), f"{stem}-private.pem"
+
+
+def _jwcrypto():
+    """Import jwcrypto lazily so the rest of the client works without it."""
+    try:
+        from jwcrypto import jwe, jwk
+        return jwe, jwk
+    except ImportError:
+        print("[ERROR] Encryption needs the 'jwcrypto' package "
+              "(pip install -r requirements.txt).")
+        return None, None
+
+
+def encrypt_message(plaintext, public_pem, key_uid):
+    """Encrypt plaintext to a recipient's RSA public key as a compact JWE.
+
+    Standard JOSE hybrid encryption: a random AES-256-GCM key encrypts the
+    message, and RSA-OAEP-256 encrypts that key. kid names the key used.
+    """
+    jwe, jwk = _jwcrypto()
+    if not jwe:
+        return None
+    token = jwe.JWE(
+        plaintext.encode("utf-8"),
+        protected=json.dumps({"alg": "RSA-OAEP-256", "enc": "A256GCM", "kid": key_uid}),
+    )
+    token.add_recipient(jwk.JWK.from_pem(public_pem.encode()))
+    return token.serialize(compact=True)
+
+
+def looks_like_jwe(message):
+    """Compact JWE: five base64url parts separated by dots."""
+    return isinstance(message, str) and message.count(".") == 4
+
+
+def decrypt_message(compact, private_path):
+    """Decrypt a compact JWE with a local private key file; return the plaintext."""
+    jwe, jwk = _jwcrypto()
+    if not jwe:
+        return None
+    with open(private_path, "rb") as f:
+        pem = f.read()
+    password = None
+    if b"ENCRYPTED" in pem:
+        password = getpass.getpass("Private key passphrase: ").encode()
+    key = jwk.JWK.from_pem(pem, password=password)
+    token = jwe.JWE()
+    token.deserialize(compact, key=key)
+    return token.payload.decode("utf-8")
+
+
+def read_key_file(path):
+    """Return the contents of a PEM file, or None if it cannot be read."""
+    if not path:
+        print("No path given.")
+        return None
+    try:
+        with open(os.path.expanduser(path), encoding="utf-8") as f:
+            return f.read().strip()
+    except (OSError, UnicodeDecodeError) as e:
+        print(f"[ERROR] Cannot read {path}: {e}")
+        return None
+
+
+def paste_key():
+    """Read a pasted PEM block, ending at its -----END ...----- line."""
     print("Paste the PEM public key (finish with the -----END PUBLIC KEY----- line):")
     lines = []
     while True:
         line = input()
         lines.append(line)
-        if "END PUBLIC KEY" in line:
-            break
-    key = "\n".join(lines)
+        if line.strip().startswith("-----END "):
+            return "\n".join(lines)
+
+
+def add_key():
+    token = pick_token()
+    if not token:
+        return False
+    username = next(u for u, t in state["tokens"].items() if t == token)
+
+    print("1. Generate a new RSA key pair")
+    print("2. Load a public key from a file")
+    print("3. Paste a public key")
+    choice = input("Choose [1]: ").strip() or "1"
+    private_path = None
+    if choice == "1":
+        key, private_path = generate_key_pair(username)
+    elif choice == "2":
+        key = read_key_file(input("Path to PEM public key file: ").strip().strip('"'))
+    elif choice == "3":
+        key = paste_key()
+    else:
+        print("Invalid choice.")
+        return False
+    if not key:
+        return False
+    if "PRIVATE KEY" in key:
+        # Never send a private key to the server, even though it would reject it.
+        print("[REFUSED] That is a PRIVATE key. Only the public key may be uploaded.")
+        return False
+
     password = getpass.getpass("Account password (required to add a key): ")
     s, d = api("POST", "/keys/addKey", {"public_key": key, "password": password}, token)
     ok = show("ADD PUBLIC KEY", s, d)
@@ -182,6 +413,9 @@ def add_key():
         uid = value(d, "key_uid", "keyUid")
         if uid:
             state["keys"][username] = uid
+            if private_path:
+                # Lets "Get message" find the right private key to decrypt with.
+                remember_private_key(uid, private_path)
     return ok
 
 
@@ -251,8 +485,41 @@ def send_message():
     if not token:
         return False
     recipient = input("Recipient username: ").strip()
-    key_uid = state["keys"].get(recipient) or input("Recipient key UID: ").strip()
-    ciphertext = input("Ciphertext: ").strip()
+    if not recipient:
+        print("No recipient given.")
+        return False
+
+    # Always encrypt to the recipient's newest key, fetched fresh: a cached
+    # key_uid may belong to a key they have since replaced or deleted.
+    s, d = api("POST", "/keys/fetchPublicKey", {"username": recipient}, token)
+    if s != 200 or not isinstance(d, dict):
+        return show("FETCH RECIPIENT KEY", s, d)
+    key_uid, public_pem = d["key_uid"], d["public_key"]
+    state["keys"][recipient] = key_uid
+    print(f"Using {recipient}'s latest public key: {key_uid}")
+
+    print("1. Type a message (encrypted here, before it is sent)")
+    print("2. Send ciphertext you already have")
+    choice = input("Choose [1]: ").strip() or "1"
+    if choice == "1":
+        plaintext = input("Message: ")
+        if not plaintext.strip():
+            print("Message is empty.")
+            return False
+        ciphertext = encrypt_message(plaintext, public_pem, key_uid)
+        if not ciphertext:
+            return False
+        if len(ciphertext) > MAX_MESSAGE_CHARS:
+            print(f"[ERROR] Encrypted message is {len(ciphertext)} characters; "
+                  f"the server accepts at most {MAX_MESSAGE_CHARS}. Shorten the message.")
+            return False
+        print(f"Encrypted ({len(ciphertext)} chars): {ciphertext[:60]}...")
+    elif choice == "2":
+        ciphertext = input("Ciphertext: ").strip()
+    else:
+        print("Invalid choice.")
+        return False
+
     s, d = api("POST", "/message/send", {
         "recipient": recipient,
         "message": ciphertext,
@@ -295,7 +562,35 @@ def get_message():
         print("No message UID given.")
         return False
     s, d = api("POST", "/message/getMessageById", {"message_uid": uid}, token)
-    return show("GET MESSAGE", s, d)
+    ok = show("GET MESSAGE", s, d)
+    if ok and isinstance(d, dict) and looks_like_jwe(d.get("message")):
+        if input("Decrypt it with your private key? [Y/n]: ").strip().lower() in ("", "y", "yes"):
+            decrypt_and_show(d["message"], d.get("key_uid"))
+    return ok
+
+
+def decrypt_and_show(compact, key_uid):
+    """Find the private key for key_uid (or ask for one) and print the plaintext."""
+    private_path = load_key_index().get(key_uid)
+    if private_path and os.path.exists(private_path):
+        print(f"Using private key {private_path}")
+    else:
+        private_path = input(f"Path to the private key for {key_uid}: ").strip().strip('"')
+        private_path = os.path.expanduser(private_path)
+    try:
+        plaintext = decrypt_message(compact, private_path)
+    except OSError as e:
+        print(f"[ERROR] Cannot read private key: {e}")
+        return
+    except Exception as e:
+        # Wrong key, wrong passphrase, or tampered ciphertext all end up here.
+        print(f"[ERROR] Decryption failed ({type(e).__name__}): wrong key/passphrase "
+              "or the message was altered.")
+        return
+    if plaintext is not None:
+        print("-" * 70)
+        print(f"Decrypted message:\n{plaintext}")
+        print("-" * 70)
 
 
 def delete_message():
@@ -437,7 +732,8 @@ ACTIONS = {
 
 def individual():
     while True:
-        print("\n--- INDIVIDUAL ACTIONS ---")
+        acting = state.get("current") if state.get("current") in state["tokens"] else None
+        print(f"\n--- INDIVIDUAL ACTIONS (acting as: {acting or 'nobody, login first'}) ---")
         for n, (name, _) in ACTIONS.items():
             print(f"{n}. {name}")
         print("0. Back")
@@ -458,6 +754,7 @@ def main():
     print("=" * 70)
     print("RELAY API TEST CLIENT")
     print(f"Base URL: {BASE_URL}")
+    print(f"Pinned certificate: {CA_FILE}")
     print("=" * 70)
 
     while True:
@@ -479,6 +776,7 @@ def main():
             print(json.dumps({
                 "base_url": BASE_URL,
                 "logged_in_users": list(state["tokens"]),
+                "acting_as": state.get("current"),
                 "key_uids": state["keys"],
                 "message_uids": list(state["messages"]),
             }, indent=2))

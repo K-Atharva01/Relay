@@ -102,14 +102,14 @@ Relay/
 │   └── test_tls.py
 ├── scripts/
 │   ├── gen_cert.py
-│   ├── purge_expired_messages.py
-│   └── relay_client.py
+│   └── purge_expired_messages.py
 ├── instance/
 ├── .env.example
 ├── pytest.ini
 ├── .gitignore
 ├── requirements.txt
 ├── run.py
+├── client.py              # interactive test client
 ├── AGENTS.md
 └── README.md
 ```
@@ -197,11 +197,19 @@ pytest
 
 Tests use an in-memory SQLite database and never touch `instance/`.
 
-To exercise a running server by hand, use the interactive client (`RELAY_BASE_URL` defaults to `http://127.0.0.1:5000`):
+To exercise a running server by hand, use the interactive client (`RELAY_BASE_URL` defaults to `https://127.0.0.1:5000`, and `RELAY_CA_FILE` to `instance/tls/cert.pem`):
 
 ```bash
-python scripts/relay_client.py
+python client.py
 ```
+
+Under *Individual actions*, the client can also:
+
+* **Add public key**: generate an RSA key pair. The private key is saved outside the repo in `~/.relay/keys/`, optionally passphrase-encrypted, and only the public key is uploaded.
+* **Send message**: encrypt a typed message to the recipient's **latest** public key before sending. It uses standard JWE (RSA-OAEP-256 + AES-256-GCM, via `jwcrypto`).
+* **Get message**: decrypt it with the matching local private key.
+
+Messages are encrypted but not signed, so the recipient only knows the sender from what the server reports. This is a test tool, not the full client.
 
 Dependencies in `requirements.txt` are pinned to known-good versions. After changing them, audit for known vulnerabilities:
 
@@ -230,7 +238,7 @@ HOST=0.0.0.0 python run.py
 Copy `instance/tls/cert.pem` (the certificate, **never** `key.pem`) to each client machine, and check that its fingerprint matches the one the server prints. For example:
 
 ```bash
-curl --cacert cert.pem https://192.168.0.200:5000/auth/login -X POST -H "Content-Type: application/json" -d '{}'
+RELAY_BASE_URL=https://192.168.0.200:5000 RELAY_CA_FILE=cert.pem python client.py
 ```
 
 **Safety checks.** `run.py` refuses to start with plain HTTP (`TLS_ENABLED=0`) or debug mode (`FLASK_DEBUG=1`) on anything but a loopback address.

@@ -23,5 +23,8 @@ Flask-Limiter==4.1.1
 # Public key validation, TLS certificate generation
 cryptography==50.0.1
 
+# Message encryption in client.py (JWE: RSA-OAEP-256 + A256GCM)
+jwcrypto==1.6.1
+
 # HTTPS WSGI server (pure Python, runs on Windows/macOS/Linux)
 cheroot==11.1.2
