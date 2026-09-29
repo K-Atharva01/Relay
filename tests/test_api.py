@@ -9,6 +9,9 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 from app import create_app
 
+# At least 32 bytes: RFC 7518 3.2 minimum for HS256 (PyJWT warns below it).
+TEST_JWT_SECRET = 'test-secret-key-not-for-production-use'
+
 
 @lru_cache(maxsize=1)
 def sample_public_key_pem():
@@ -26,7 +29,7 @@ def client():
     app = create_app({
         'TESTING': True,
         'SQLALCHEMY_DATABASE_URI': 'sqlite:///:memory:',
-        'JWT_SECRET_KEY': 'test-secret-key',
+        'JWT_SECRET_KEY': TEST_JWT_SECRET,
         'PROPAGATE_EXCEPTIONS': True,
         'RATELIMIT_ENABLED': False,
     })
@@ -611,7 +614,7 @@ def small_inbox_client():
     app = create_app({
         'TESTING': True,
         'SQLALCHEMY_DATABASE_URI': 'sqlite:///:memory:',
-        'JWT_SECRET_KEY': 'test-secret-key',
+        'JWT_SECRET_KEY': TEST_JWT_SECRET,
         'PROPAGATE_EXCEPTIONS': True,
         'RATELIMIT_ENABLED': False,
         'MAX_INBOX_MESSAGES': 2,
@@ -793,7 +796,7 @@ def limited_client():
     app = create_app({
         'TESTING': True,
         'SQLALCHEMY_DATABASE_URI': 'sqlite:///:memory:',
-        'JWT_SECRET_KEY': 'test-secret-key',
+        'JWT_SECRET_KEY': TEST_JWT_SECRET,
         'PROPAGATE_EXCEPTIONS': True,
         'RATELIMIT_ENABLED': True,
     })
