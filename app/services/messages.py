@@ -3,10 +3,10 @@
 from datetime import datetime, timedelta, timezone
 import uuid
 
-from sqlalchemy import or_
+from sqlalchemy import case, or_
 
 from app.extensions import db
-from app.models import EncryptedMessage
+from app.models import EncryptedMessage, User
 
 
 def _utcnow():
@@ -23,9 +23,24 @@ def purge_expired(user):
     ).delete(synchronize_session=False)
 
     if count:
-        user.current_messages = max(user.current_messages - count, 0)
+        _decrement_message_count(user, count)
         db.session.commit()
     return count
+
+
+def _decrement_message_count(user, n):
+    """Atomically lower the user's stored-message counter by n, not below 0.
+
+    Done in SQL rather than Python so concurrent requests cannot overwrite
+    each other's changes. The caller commits.
+    """
+    User.query.filter(User.id == user.id).update(
+        {User.current_messages: case(
+            (User.current_messages > n, User.current_messages - n),
+            else_=0,
+        )},
+        synchronize_session=False,
+    )
 
 
 def send_message(sender, recipient, encrypted_message, key_uid,
@@ -38,14 +53,20 @@ def send_message(sender, recipient, encrypted_message, key_uid,
     # Expired messages no longer count against the inbox cap.
     purge_expired(recipient)
 
-    if max_inbox and recipient.current_messages >= max_inbox:
+    # Check the cap and reserve a slot in one conditional UPDATE, so two
+    # concurrent sends cannot both pass the check. The row lock taken by
+    # the UPDATE is held until the message insert below commits.
+    reserve = User.query.filter(User.id == recipient.id)
+    if max_inbox:
+        reserve = reserve.filter(User.current_messages < max_inbox)
+    if not reserve.update({User.current_messages: User.current_messages + 1},
+                          synchronize_session=False):
+        db.session.rollback()
         return None, "Recipient inbox is full"
 
     expires_at = None
     if ttl_days > 0:
         expires_at = _utcnow() + timedelta(days=ttl_days)
-
-    recipient.current_messages += 1
 
     message = EncryptedMessage(
         # Opaque per-message identifier. UUIDs generated independently
@@ -102,6 +123,6 @@ def delete_message(user, message_uid):
         return False
 
     db.session.delete(message)
-    user.current_messages = max(user.current_messages - 1, 0)
+    _decrement_message_count(user, 1)
     db.session.commit()
     return True

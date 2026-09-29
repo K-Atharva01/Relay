@@ -2,7 +2,7 @@
 """Interactive Relay API test client.
 
 Run:
-    python tests/relay_test_client.py
+    python scripts/relay_client.py
 
 Provides:
 - Automated end-to-end Alice -> Bob flow

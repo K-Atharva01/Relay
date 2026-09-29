@@ -50,7 +50,7 @@ class ProductionConfig(Config):
 class TestingConfig(Config):
     """Testing configuration."""
     TESTING = True
-    SQLALCHEMY_DATABASE_URI = "sqlite:///test_secure_exchange.db"
+    SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(minutes=5)
     PROPAGATE_EXCEPTIONS = True
     # Tests create many users and logins from one address; rate-limit tests

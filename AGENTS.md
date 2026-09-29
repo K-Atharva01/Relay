@@ -63,22 +63,19 @@ Relay/
 │   │   ├── __init__.py
 │   │   ├── auth.py
 │   │   ├── keys.py
-│   │   └── messages.py
-│   ├── services/
-│   │   ├── __init__.py
-│   │   ├── auth.py
-│   │   ├── keys.py
-│   │   └── messages.py
-│   └── utils/
+│   │   ├── messages.py
+│   │   └── helpers.py
+│   └── services/
 │       ├── __init__.py
-│       └── ...
+│       ├── auth.py
+│       ├── keys.py
+│       └── messages.py
 ├── tests/
-│   ├── unit/
-│   ├── integration/
-│   └── fixtures/
+│   ├── test_api.py
+│   └── test_migration.py
 ├── scripts/
-├── migrations/
 ├── instance/
+├── pytest.ini
 ├── .env.example
 ├── .gitignore
 ├── requirements.txt
@@ -153,9 +150,7 @@ Do not create unnecessary service classes.
 
 Simple functions are preferred where appropriate.
 
-### `app/utils/`
-
-Contains genuinely reusable helpers.
+Domain helpers live with their service (e.g. public-key validation in `app/services/keys.py`). Request-parsing helpers live in `app/routes/helpers.py`, since services must not depend on Flask request parsing.
 
 ### `tests/`
 

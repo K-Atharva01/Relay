@@ -63,7 +63,7 @@ The server is intended to act as a **relay and key directory**, rather than as a
 * Rate limiting on registration and login
 * Exact-username lookup (no full user directory)
 * SQLite database
-* API tests with `pytest`, shell scripts, `curl`
+* API tests with `pytest`
 
 ---
 
@@ -77,7 +77,7 @@ The server is intended to act as a **relay and key directory**, rather than as a
 | Authentication   | JWT                           |
 | Password hashing | Werkzeug                      |
 | Rate limiting   | Flask-Limiter                 |
-| Testing          | `pytest`, shell scripts, `curl` |
+| Testing          | `pytest`                      |
 
 ---
 
@@ -89,15 +89,19 @@ Relay/
 │   ├── models/
 │   ├── routes/
 │   ├── services/
-│   ├── utils/
 │   ├── config.py
 │   ├── extensions.py
 │   └── __init__.py
 │
 ├── tests/
+│   ├── test_api.py
+│   └── test_migration.py
 ├── scripts/
+│   ├── purge_expired_messages.py
+│   └── relay_client.py
 ├── instance/
 ├── .env.example
+├── pytest.ini
 ├── .gitignore
 ├── requirements.txt
 ├── run.py
@@ -152,6 +156,8 @@ For example:
 JWT_SECRET_KEY=change-this-secret
 ```
 
+`run.py` and `scripts/purge_expired_messages.py` load `.env` automatically. The app refuses to start if `JWT_SECRET_KEY` is not set.
+
 Do not commit `.env` or real secrets to Git.
 
 ### 5. Start the application
@@ -167,7 +173,15 @@ The API should then be available locally.
 With the virtual environment active:
 
 ```bash
-pytest tests/
+pytest
+```
+
+Tests use an in-memory SQLite database and never touch `instance/`.
+
+To exercise a running server by hand, use the interactive client (`RELAY_BASE_URL` defaults to `http://127.0.0.1:5000`):
+
+```bash
+python scripts/relay_client.py
 ```
 
 Dependencies in `requirements.txt` are pinned to known-good versions. After changing them, audit for known vulnerabilities:

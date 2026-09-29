@@ -81,3 +81,6 @@ celerybeat.pid
 
 # Sphinx documentation
 docs/_build/
+
+# Local project notes / AI context briefs (not part of the published repo)
+docs/relay-website-brief.md

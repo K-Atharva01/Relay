@@ -12,7 +12,7 @@ from flask_limiter.util import get_remote_address
 
 from app.extensions import limiter
 from app.services import auth as auth_service
-from app.utils.request import get_json_object, get_str
+from app.routes.helpers import get_json_object, get_str
 
 auth_bp = Blueprint("auth", __name__)
 

@@ -6,7 +6,7 @@ from flask_jwt_extended import current_user, jwt_required
 from app.services import auth as auth_service
 from app.services import keys as key_service
 from app.services import messages as message_service
-from app.utils.request import get_json_object, get_str
+from app.routes.helpers import get_json_object, get_str
 
 message_bp = Blueprint("message", __name__)
 
@@ -95,7 +95,8 @@ def get_messages():
     limit_raw = request.args.get("limit", str(DEFAULT_INBOX_LIMIT))
     offset_raw = request.args.get("offset", "0")
 
-    if not limit_raw.isdigit() or not offset_raw.isdigit():
+    # isascii(): str.isdigit() also accepts characters like "²" that int() rejects.
+    if not all(raw.isascii() and raw.isdigit() for raw in (limit_raw, offset_raw)):
         return jsonify({
             "error": "limit and offset must be non-negative integers"
         }), 400

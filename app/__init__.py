@@ -55,7 +55,11 @@ def create_app(config_override=None):
     # Apply any overrides
     if config_override:
         app.config.update(config_override)
-    
+
+    # Fail at startup rather than with a 500 on the first login.
+    if not app.config.get("JWT_SECRET_KEY") and not app.config.get("TESTING"):
+        raise RuntimeError("JWT_SECRET_KEY must be set (environment or .env)")
+
     # Initialize extensions
     init_extensions(app)
     init_jwt_loaders(app)
@@ -93,7 +97,3 @@ def create_app(config_override=None):
         _migrate_schema(db.engine)
     
     return app
-
-
-# For backwards compatibility
-default_app = create_app()

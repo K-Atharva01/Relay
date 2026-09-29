@@ -1,13 +1,8 @@
 ﻿"""Integration tests for the Relay API."""
 
-import os
-import sys
 import json
 import pytest
 from functools import lru_cache
-
-# Add the project root to the path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -665,6 +660,8 @@ class TestInboxRetention:
     @pytest.mark.parametrize('query', [
         'limit=0', 'limit=101', 'limit=abc', 'limit=-1',
         'offset=-1', 'offset=x',
+        # Unicode digits pass str.isdigit() but not int(); must be 400, not 500.
+        'limit=²', 'offset=²',
     ])
     def test_invalid_pagination_rejected(self, client, query):
         headers = register_and_login(client, 'alice', '100')
@@ -904,6 +901,68 @@ class TestKeySubstitution:
 
         fetched = client.post('/keys/fetchPublicKey', headers=alice, json={'username': 'bob'})
         assert fetched.get_json()['key_uid'] == original_uid
+
+
+class TestStartupConfig:
+    """The app refuses to start without a JWT signing key."""
+
+    def test_missing_jwt_secret_fails_at_startup(self):
+        with pytest.raises(RuntimeError, match='JWT_SECRET_KEY'):
+            create_app({
+                'TESTING': False,
+                'SQLALCHEMY_DATABASE_URI': 'sqlite:///:memory:',
+                'JWT_SECRET_KEY': None,
+            })
+
+
+class TestConsistency:
+    """Counters and orderings that must not depend on in-memory state or timing."""
+
+    def test_inbox_cap_checked_in_database_not_stale_object(self, client):
+        from sqlalchemy import update
+
+        from app.extensions import db
+        from app.models import User
+        from app.services import messages as message_service
+
+        register_and_login(client, 'alice', '100')
+        register_and_login(client, 'bob', '200')
+        alice_user = User.query.filter_by(username='alice').one()
+        bob_user = User.query.filter_by(username='bob').one()
+
+        # A concurrent request fills Bob's inbox; this loaded object doesn't see it.
+        db.session.execute(
+            update(User).where(User.id == bob_user.id).values(current_messages=2),
+            execution_options={'synchronize_session': False},
+        )
+        assert bob_user.current_messages == 0
+
+        message, error = message_service.send_message(
+            alice_user, bob_user, 'ciphertext', 'key', max_inbox=2)
+        assert message is None
+        assert error == 'Recipient inbox is full'
+
+    def test_latest_key_breaks_timestamp_ties_by_upload_order(self, client):
+        from datetime import datetime
+
+        from app.extensions import db
+        from app.models import PublicKey
+
+        alice = register_and_login(client, 'alice', '100')
+        bob = register_and_login(client, 'bob', '200')
+        first_uid = add_key(client, bob)
+        second_uid = add_key(client, bob)
+
+        # Both uploads land in the same (second-precision) timestamp.
+        for key in PublicKey.query.all():
+            key.timestamp = datetime(2026, 1, 1)
+        db.session.commit()
+
+        fetched = client.post('/keys/fetchPublicKey', headers=alice, json={'username': 'bob'})
+        assert fetched.get_json()['key_uid'] == second_uid
+
+        listed = client.get('/keys/getAllKeys', headers=bob).get_json()['public_keys']
+        assert [k['key_uid'] for k in listed] == [second_uid, first_uid]
 
 
 if __name__ == '__main__':

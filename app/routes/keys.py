@@ -14,8 +14,7 @@ from jwt.exceptions import PyJWTError
 from app.extensions import limiter
 from app.services import auth as auth_service
 from app.services import keys as key_service
-from app.utils.keys import validate_public_key
-from app.utils.request import get_json_object, get_str
+from app.routes.helpers import get_json_object, get_str
 
 key_bp = Blueprint("keys", __name__)
 
@@ -63,7 +62,7 @@ def upload_key():
     if not current_user.check_password(password):
         return jsonify({"error": "Invalid password"}), 403
 
-    key_error = validate_public_key(public_key)
+    key_error = key_service.validate_public_key(public_key)
     if key_error:
         return jsonify({"error": key_error}), 400
 
