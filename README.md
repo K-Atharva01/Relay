@@ -61,6 +61,7 @@ The server is intended to act as a **relay and key directory**, rather than as a
 * Per-user message inbox with pagination and expiration
 * Message retrieval and deletion
 * Rate limiting on registration and login
+* HTTPS by default (TLS 1.3, self-signed certificate pinned by clients)
 * Exact-username lookup (no full user directory)
 * SQLite database
 * API tests with `pytest`
@@ -77,6 +78,7 @@ The server is intended to act as a **relay and key directory**, rather than as a
 | Authentication   | JWT                           |
 | Password hashing | Werkzeug                      |
 | Rate limiting   | Flask-Limiter                 |
+| Transport        | HTTPS via cheroot, TLS 1.3    |
 | Testing          | `pytest`                      |
 
 ---
@@ -91,12 +93,15 @@ Relay/
 │   ├── services/
 │   ├── config.py
 │   ├── extensions.py
+│   ├── tls.py              # certificate generation, HTTPS server
 │   └── __init__.py
 │
 ├── tests/
 │   ├── test_api.py
-│   └── test_migration.py
+│   ├── test_migration.py
+│   └── test_tls.py
 ├── scripts/
+│   ├── gen_cert.py
 │   ├── purge_expired_messages.py
 │   └── relay_client.py
 ├── instance/
@@ -166,7 +171,21 @@ Do not commit `.env` or real secrets to Git.
 python run.py
 ```
 
-The API should then be available locally.
+Relay serves **HTTPS** at `https://127.0.0.1:5000` (see [HTTPS](#https) below). On first run it creates a certificate and prints its SHA-256 fingerprint:
+
+```text
+Certificate: .../instance/tls/cert.pem
+Valid for:   127.0.0.1, ::1, localhost
+SHA-256:     C6:9A:31:...
+Starting Relay on https://127.0.0.1:5000 (debug: False)
+```
+
+Try it:
+
+```bash
+curl --cacert instance/tls/cert.pem -X POST https://127.0.0.1:5000/auth/login \
+  -H "Content-Type: application/json" -d '{}'
+```
 
 ### 6. Run tests and audit dependencies
 
@@ -190,6 +209,33 @@ Dependencies in `requirements.txt` are pinned to known-good versions. After chan
 pip install pip-audit
 pip-audit -r requirements.txt
 ```
+
+---
+
+## HTTPS
+
+Message bodies are meant to be end-to-end encrypted by the client, but passwords, JWTs, metadata, and the public keys Relay hands out still cross the network. Without TLS, anyone on the path could read tokens or **swap in their own public key**. So Relay serves HTTPS by default, without needing a domain or a public certificate authority:
+
+* On first run, `run.py` generates a self-signed EC P-256 certificate in `instance/tls/` (gitignored), using the `cryptography` library, so no `openssl` is needed.
+* It serves with [cheroot](https://github.com/cherrypy/cheroot), a pure-Python server that works on Windows, macOS and Linux, and accepts **TLS 1.3 only**. TLS 1.3 always uses an ephemeral (EC)DHE key exchange, so traffic has forward secrecy.
+* Clients **pin** that certificate: they trust it and nothing else, and never the system certificate authorities. No outside CA can impersonate the server.
+
+**Serving on your network.** Bind to all interfaces and add your LAN IP to the certificate:
+
+```bash
+python scripts/gen_cert.py --force --hostname 192.168.0.200
+HOST=0.0.0.0 python run.py
+```
+
+Copy `instance/tls/cert.pem` (the certificate, **never** `key.pem`) to each client machine, and check that its fingerprint matches the one the server prints. For example:
+
+```bash
+curl --cacert cert.pem https://192.168.0.200:5000/auth/login -X POST -H "Content-Type: application/json" -d '{}'
+```
+
+**Safety checks.** `run.py` refuses to start with plain HTTP (`TLS_ENABLED=0`) or debug mode (`FLASK_DEBUG=1`) on anything but a loopback address.
+
+**Rotation.** `python scripts/gen_cert.py --force` replaces the certificate, which is valid for 2 years. Every client must then pin the new one.
 
 ---
 

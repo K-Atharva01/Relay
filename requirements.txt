@@ -20,5 +20,8 @@ pytest==9.1.1
 # Rate limiting
 Flask-Limiter==4.1.1
 
-# Public key validation
+# Public key validation, TLS certificate generation
 cryptography==50.0.1
+
+# HTTPS WSGI server (pure Python, runs on Windows/macOS/Linux)
+cheroot==11.1.2

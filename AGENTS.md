@@ -54,6 +54,7 @@ Relay/
 │   ├── __init__.py
 │   ├── config.py
 │   ├── extensions.py
+│   ├── tls.py
 │   ├── models/
 │   │   ├── __init__.py
 │   │   ├── user.py
@@ -72,7 +73,8 @@ Relay/
 │       └── messages.py
 ├── tests/
 │   ├── test_api.py
-│   └── test_migration.py
+│   ├── test_migration.py
+│   └── test_tls.py
 ├── scripts/
 ├── instance/
 ├── pytest.ini
@@ -537,11 +539,16 @@ Document the limits and test expected behavior.
 
 The Flask development server is for local development only.
 
-For network-accessible deployments:
+Relay serves HTTPS by default (`run.py` with cheroot, TLS 1.3 only), using a self-signed certificate generated in `instance/tls/` (`app/tls.py`). Clients pin that certificate and trust nothing else; they must not fall back to system CAs or disable verification.
 
-* bind Flask to localhost/private interfaces
-* use a proper WSGI server such as Gunicorn
-* terminate TLS at a trusted reverse proxy or ingress
+* `app.tls.check_bind` refuses plain HTTP and debug mode on non-loopback addresses; keep it that way
+* never commit the TLS private key (`instance/` and `*.pem` are gitignored)
+* rotating the certificate requires every client to re-pin it
+
+For deployments behind a reverse proxy or ingress:
+
+* terminate TLS at the trusted proxy and bind Relay to localhost/private interfaces
+* forward the real client address (e.g. Werkzeug `ProxyFix`) so rate limits are per client
 * use HTTPS for passwords and bearer tokens
 * consider HSTS for HTTPS deployments
 
